@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,readFile,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,writeFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {datePrefix,datedName,listSaved,renameSaved} from '../src/rename-files.js';
+import {copySaved,datePrefix,datedName,listSaved,renameSaved} from '../src/rename-files.js';
 
 test('checks calendar dates and replaces an existing date prefix',()=>{
   assert.equal(datedName('01-問題.pdf','2026-11-05'),'20261105-01-問題.pdf');
@@ -42,4 +42,21 @@ test('renamed year PDF remains recognized as downloaded',async t=>{
   await renameSaved(dir,'output/問題.pdf','2026-11-05');
   const state=await readYearState(dir);
   assert.equal(await collectYear({page:null,frame:null,item,dir,state,request:{}}),'skipped');
+});
+
+test('dated copies preserve the original and history, avoid collisions, and remain manageable',async t=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'date-copy-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  await mkdir(path.join(dir,'output'),{recursive:true});const original='output/問題.pdf';
+  await writeFile(path.join(dir,original),'example');
+  const history=JSON.stringify({version:1,items:[{key:'x',path:original}]});
+  await writeFile(path.join(dir,'year-manifest.json'),history);
+  const copy=await copySaved(dir,original,'2026-11-05');
+  assert.equal(copy.status,'created');assert.equal(await readFile(path.join(dir,copy.path),'utf8'),'example');
+  assert.notEqual((await stat(path.join(dir,original))).ino,(await stat(path.join(dir,copy.path))).ino);
+  assert.equal(await readFile(path.join(dir,'year-manifest.json'),'utf8'),history);
+  assert.equal((await listSaved(dir)).length,2);
+  await assert.rejects(copySaved(dir,original,'2026-11-05'),/同名/);
+  const renamed=await renameSaved(dir,copy.path,'2026-11-06');
+  assert.equal(renamed.status,'renamed');assert.equal((await listSaved(dir)).length,2);
+  assert.equal(await readFile(path.join(dir,original),'utf8'),'example');
 });

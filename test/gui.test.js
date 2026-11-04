@@ -51,7 +51,8 @@ test('GUI discovers category and downloads two questions without manual subject'
   const {server,url}=await createGuiServer({context,dir,request});t.after(()=>new Promise(resolve=>server.close(resolve)));
   const gui=await context.newPage();await gui.goto(url);await gui.getByRole('button',{name:'大問別の問題を読み込む'}).click();
   await gui.getByText('2件の候補を読み込みました。').waitFor();
-  await gui.getByLabel('表示中をすべて選択').check();
+  await gui.locator('#range-start').fill('1');await gui.locator('#range-end').fill('2');await gui.locator('#range-select').click();
+  assert.equal(await gui.locator('#items input:checked').count(),2);
   await gui.getByRole('button',{name:'選択した問題を取得'}).click();
   await gui.getByText('取得が完了しました。').waitFor({timeout:15000});
   await gui.getByText(/保存 2件/).waitFor();
@@ -94,4 +95,27 @@ test('GUI renames selected saved PDFs and updates their history', async t => {
   await page.getByRole('button',{name:'日付を付ける'}).click();await page.getByText('1件を処理しました。失敗 0件。').waitFor();
   assert.equal(await fs.readFile(path.join(dir,'output','20261105-問題.pdf'),'utf8'),'example');
   assert.equal(JSON.parse(await fs.readFile(path.join(dir,'year-manifest.json'),'utf8')).items[0].path,'output/20261105-問題.pdf');
+});
+
+test('GUI selects visible ranges and creates dated copies', async t => {
+  const fs=await import('node:fs/promises'), {tmpdir}=await import('node:os'), path=(await import('node:path')).default;
+  const dir=await fs.mkdtemp(path.join(tmpdir(),'gui-copy-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  await fs.mkdir(path.join(dir,'output'),{recursive:true});
+  const items=[];for(let i=1;i<=6;i++){const file=`output/問題${i}.pdf`;await fs.writeFile(path.join(dir,file),`PDF ${i}`);items.push({key:String(i),path:file});}
+  await fs.writeFile(path.join(dir,'year-manifest.json'),JSON.stringify({version:1,items}));
+  const {server,url}=await createGuiServer({context:{pages:()=>[]},dir});t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const browser=await chromium.launch({headless:true});t.after(()=>browser.close());const page=await browser.newPage();
+  await page.goto(url);await page.getByRole('button',{name:'保存済みPDFを読み込む'}).click();
+  await page.locator('#saved-files input').nth(0).click();
+  await page.locator('#saved-files input').nth(3).click({modifiers:['Shift']});
+  assert.equal(await page.locator('#saved-files input:checked').count(),4);
+  await page.getByLabel('表示中の保存済みPDFをすべて選択').check();
+  await page.getByLabel('表示中の保存済みPDFをすべて選択').uncheck();
+  await page.locator('#saved-range-start').fill('2');await page.locator('#saved-range-end').fill('3');
+  await page.locator('#saved-range-select').click();assert.equal(await page.locator('#saved-files input:checked').count(),2);
+  await page.getByLabel('演習日').fill('2026-11-05');await page.getByLabel('元を残してコピーを作成').check();
+  await page.getByRole('button',{name:'日付付きコピーを作成'}).click();await page.getByText('2件を処理しました。失敗 0件。').waitFor();
+  assert.equal(await fs.readFile(path.join(dir,'output','問題2.pdf'),'utf8'),'PDF 2');
+  assert.equal(await fs.readFile(path.join(dir,'output','20261105-問題2.pdf'),'utf8'),'PDF 2');
+  assert.equal(await page.locator('#saved-files input').count(),8);
 });

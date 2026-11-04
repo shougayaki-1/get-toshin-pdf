@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { collectOne, inferSubject, listQuestions, readState } from './daimon.js';
 import { collectYear, listYears, openYearList, readYearState } from './year.js';
-import { datePrefix, listSaved, renameSaved } from './rename-files.js';
+import { copySaved, datePrefix, listSaved, renameSaved } from './rename-files.js';
 import { openCategoryList, listCategories, enterCategory, returnToCategories } from './categories.js';
 import { retryTransient } from './retry.js';
 
@@ -198,13 +198,15 @@ export async function createGuiServer({context, dir, request}) {
       if(u.pathname==='/api/discover' && ['year','daimon','categories'].includes(body.mode)) {void discover(body.mode,body.resume===true && ['year','categories'].includes(body.mode));return response(res,202,{});}
       if(u.pathname==='/api/rename') {
         try {datePrefix(body.date);} catch {return response(res,400,{error:'有効な日付を選択してください'});}
+        const mode=body.mode ?? 'rename';
+        if(!['rename','copy'].includes(mode))return response(res,400,{error:'操作を選択してください'});
         if(!Array.isArray(body.indices) || !body.indices.length || body.indices.length>savedFiles.length ||
           body.indices.some(i=>!Number.isInteger(i)||i<0||i>=savedFiles.length) || new Set(body.indices).size!==body.indices.length) return response(res,400,{error:'ファイルを選択してください'});
         state.busy=true;const results=[];
         try {
           for(const i of body.indices) {
             const file=savedFiles[i];
-            try {const result=await renameSaved(dir,file.path,body.date);results.push({name:file.name,status:result.status,path:result.path});}
+            try {const result=await (mode==='copy'?copySaved:renameSaved)(dir,file.path,body.date);results.push({name:file.name,status:result.status,path:result.path});}
             catch(e) {results.push({name:file.name,status:'failed',error:/^(同名|対象ファイル|保存履歴|複数の保存履歴)/.test(e.message)?e.message:'変更できませんでした'});}
           }
           savedFiles=await listSaved(dir);

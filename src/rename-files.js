@@ -1,11 +1,13 @@
-import { link, lstat, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, link, lstat, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 
 const sources = [
   {name:'daimon-manifest.json', array:'items', field:'path'},
   {name:'year-manifest.json', array:'items', field:'path'},
-  {name:'manifest.json', array:'documents', field:'processedPath'}
+  {name:'manifest.json', array:'documents', field:'processedPath'},
+  {name:'date-copies.json', array:'items', field:'path'}
 ];
 export function datePrefix(date) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw Error('日付を選択してください');
@@ -71,4 +73,27 @@ export async function renameSaved(dir,relative,date) {
   // If deletion fails, retain the extra link rather than risking data loss.
   try {await unlink(oldFile);} catch {return {status:'copied',path:newRel};}
   return {status:'renamed',path:newRel};
+}
+export async function copySaved(dir,relative,date) {
+  const filename=datedName(path.basename(relative),date);
+  const groups=await manifests(dir);
+  if(!groups.some(g=>g.data[g.array].some(record=>record[g.field]===relative)))throw Error('保存履歴に対象がありません');
+  const oldFile=await safeFile(dir,relative);
+  if(!oldFile)throw Error('対象ファイルが見つかりません');
+  const newFile=path.join(path.dirname(oldFile),filename);
+  const temp=path.join(path.dirname(oldFile),`.date-copy-${randomBytes(12).toString('hex')}.tmp`);
+  let published=false;
+  try {
+    await copyFile(oldFile,temp,constants.COPYFILE_EXCL);
+    await link(temp,newFile);published=true;
+    const owner=groups.find(g=>g.name==='date-copies.json') || {...sources.at(-1),data:{version:1,items:[]}};
+    const newRel=path.relative(dir,newFile);
+    owner.data.items.push({path:newRel});
+    await saveManifest(dir,owner);
+    return {status:'created',path:newRel};
+  } catch(e) {
+    if(published)await unlink(newFile).catch(()=>{});
+    if(e.code==='EEXIST')throw Error('同名のファイルが既にあります');
+    throw e;
+  } finally {await unlink(temp).catch(()=>{});}
 }
