@@ -83,6 +83,15 @@ async function scan() {
   }
 }
 
+// Also react immediately to popup/window navigation; polling is a fallback.
+function observe(page) {
+  page.on('domcontentloaded', () => {
+    void capturePrintPage(page).catch(error => console.warn('Inspection failed:', error.message));
+  });
+}
+for (const page of context.pages()) observe(page);
+context.on('page', observe);
+
 const interval = setInterval(() => { void scan(); }, 3000);
 await scan();
 
