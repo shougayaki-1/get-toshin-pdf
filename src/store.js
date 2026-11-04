@@ -31,10 +31,21 @@ export async function openStore(dataDir) {
     if (!isPdfBytes(bytes)) throw new Error('Response was not a PDF');
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     const existing = manifest.documents.find(record => record.sha256 === sha256);
-    if (existing) return { record: existing, duplicate: true };
+    if (existing) {
+      // Restore a missing raw file after interruption or manual deletion.
+      await writeFile(path.join(dataDir, 'raw', existing.filename), bytes, { mode: 0o600 });
+      return { record: existing, duplicate: true };
+    }
 
     const filename = `${sha256}.pdf`;
-    await writeFile(path.join(dataDir, 'raw', filename), bytes, { flag: 'wx', mode: 0o600 });
+    try {
+      await writeFile(path.join(dataDir, 'raw', filename), bytes, { flag: 'wx', mode: 0o600 });
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      // A crash may have occurred after writing the raw file but before saving the manifest.
+      const prior = await readFile(path.join(dataDir, 'raw', filename));
+      if (!prior.equals(bytes)) throw new Error('Existing raw file does not match its hash');
+    }
     const record = {
       sha256,
       filename,
@@ -42,8 +53,8 @@ export async function openStore(dataDir) {
       year: metadata.year,
       round: metadata.round,
       kind: '問題',
-      enshuSetId: safeName(metadata.enshuSetId, 90),
-      daimonId: safeName(metadata.daimonId, 90),
+      enshuSetId: metadata.enshuSetId ? safeName(metadata.enshuSetId, 90) : '',
+      daimonId: metadata.daimonId ? safeName(metadata.daimonId, 90) : '',
       savedAt: new Date().toISOString(),
       processedPath: null
     };

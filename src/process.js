@@ -1,5 +1,5 @@
 import { PDFDocument } from 'pdf-lib';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isJapaneseSubject, parseOptions, safeName } from './common.js';
 import { openStore } from './store.js';
@@ -27,8 +27,8 @@ for (const record of store.manifest.documents) {
     }
     const subject = options.subject || record.subject;
     if (!subject) throw new Error('Subject is missing; rerun with --subject');
-    const year = record.year || options.year;
-    const round = record.round || options.round;
+    const year = options.year !== '年度不明' ? options.year : (record.year || options.year);
+    const round = options.round !== '回次不明' ? options.round : (record.round || options.round);
     const direction = isJapaneseSubject(subject) ? 'rtl' : 'ltr';
     const raw = await readFile(path.join(options.dataDir, 'raw', record.filename));
     const transformed = await transformPdf(raw, PDFDocument, direction);
@@ -40,7 +40,9 @@ for (const record of store.manifest.documents) {
       id, record.sha256.slice(0, 8)
     ].join('_') + '.pdf';
     const output = path.join(folder, filename);
-    await writeFile(output, transformed);
+    const temporary = `${output}.${process.pid}.tmp`;
+    await writeFile(temporary, transformed, { mode: 0o600 });
+    await rename(temporary, output);
     record.processedPath = path.relative(options.dataDir, output);
     await store.save();
     converted++;

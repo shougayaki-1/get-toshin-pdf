@@ -52,7 +52,7 @@ async function capturePrintPage(page) {
     try {
       const response = await page.request.get(pdfUrl, {
         timeout: 30000,
-        maxRedirects: 3,
+        maxRedirects: 0,
         headers: { referer: printUrl }
       });
       if (!response.ok()) throw new Error(`HTTP ${response.status()}`);
@@ -63,9 +63,11 @@ async function capturePrintPage(page) {
       console.log(result.duplicate ? 'Skipped duplicate PDF.' :
         `Saved PDF (${result.record.sha256.slice(0, 10)}…)`);
       // Avoid bursts against the service.
-      await new Promise(resolve => setTimeout(resolve, 1500));
     } catch (error) {
-      console.warn(`Capture failed (try ${attempts.get(key).count}/3): ${error.message}`);
+      console.warn(`Capture failed (try ${attempts.get(key).count}/3): ${/^HTTP \d+$/.test(error.message) ? error.message : 'network, authentication, or PDF error'}`);
+      if (/^HTTP (401|403|404|3\d\d)$/.test(error.message)) attempts.set(key, { done: true });
+    } finally {
+      await new Promise(resolve => setTimeout(resolve, 1500));
     }
   }
 }
@@ -76,7 +78,7 @@ async function scan() {
   try {
     for (const page of context.pages()) {
       try { await capturePrintPage(page); }
-      catch (error) { console.warn('Could not inspect a page:', error.message); }
+      catch (error) { console.warn('Could not inspect a page; it may have closed or the session expired.'); }
     }
   } finally {
     scanning = false;
@@ -86,7 +88,7 @@ async function scan() {
 // Also react immediately to popup/window navigation; polling is a fallback.
 function observe(page) {
   page.on('domcontentloaded', () => {
-    void capturePrintPage(page).catch(error => console.warn('Inspection failed:', error.message));
+    void scan();
   });
 }
 for (const page of context.pages()) observe(page);
