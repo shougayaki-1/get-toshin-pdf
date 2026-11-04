@@ -76,3 +76,17 @@ test('GUI discovers and collects a year entry', async t => {
   await gui.getByText('1件の候補を読み込みました。').waitFor();await gui.getByLabel('表示中をすべて選択').check();
   await gui.getByRole('button',{name:'選択した問題を取得'}).click();await gui.getByText('取得が完了しました。').waitFor({timeout:15000});await gui.getByText(/保存 1件/).waitFor();
 });
+
+test('GUI renames selected saved PDFs and updates their history', async t => {
+  const fs=await import('node:fs/promises'), {tmpdir}=await import('node:os'), path=(await import('node:path')).default;
+  const dir=await fs.mkdtemp(path.join(tmpdir(),'gui-rename-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  await fs.mkdir(path.join(dir,'output'),{recursive:true});await fs.writeFile(path.join(dir,'output','問題.pdf'),'example');
+  await fs.writeFile(path.join(dir,'year-manifest.json'),JSON.stringify({version:1,items:[{key:'x',path:'output/問題.pdf'}]}));
+  const {server,url}=await createGuiServer({context:{pages:()=>[]},dir});t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const browser=await chromium.launch({headless:true});t.after(()=>browser.close());const page=await browser.newPage();
+  await page.goto(url);await page.getByRole('button',{name:'保存済みPDFを読み込む'}).click();
+  await page.getByLabel('演習日').fill('2026-11-05');await page.getByLabel('表示中の保存済みPDFをすべて選択').check();
+  await page.getByRole('button',{name:'日付を付ける'}).click();await page.getByText('1件を処理しました。失敗 0件。').waitFor();
+  assert.equal(await fs.readFile(path.join(dir,'output','20261105-問題.pdf'),'utf8'),'example');
+  assert.equal(JSON.parse(await fs.readFile(path.join(dir,'year-manifest.json'),'utf8')).items[0].path,'output/20261105-問題.pdf');
+});

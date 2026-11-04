@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { collectOne, inferSubject, listQuestions, readState } from './daimon.js';
 import { collectYear, listYears, openYearList, readYearState } from './year.js';
+import { datePrefix, listSaved, renameSaved } from './rename-files.js';
 
 const staticDir = fileURLToPath(new URL('../gui/', import.meta.url));
 const assets = {'/': ['index.html','text/html; charset=utf-8'], '/app.js':['app.js','text/javascript; charset=utf-8'], '/style.css':['style.css','text/css; charset=utf-8']};
@@ -22,6 +23,7 @@ export async function createGuiServer({context, dir, request}) {
   const token = randomBytes(32).toString('hex');
   const state = { mode:null, items:[], frame:null, page:null, subject:null, setId:null, category:null, busy:false,
     status:'POSにログインしてから、年度別または大問別の候補を読み込んでください。', progress:[], counts:null };
+  let savedFiles=[];
   const sendStatus = () => ({ mode:state.mode, items:state.items.map((x,i)=>({index:i, title:state.mode==='year' ? `${x.round} / ${x.subject}` : `${x.number} - ${x.title}`})),
     subject:state.subject, category:state.category, busy:state.busy, status:state.status, progress:state.progress, counts:state.counts, dataDir:dir });
   const reset = () => { state.items=[];state.mode=null;state.frame=null;state.page=null;state.subject=null;state.counts=null;state.progress=[]; };
@@ -90,11 +92,31 @@ export async function createGuiServer({context, dir, request}) {
     const supplied=req.headers['x-app-token'];
     if(typeof supplied!=='string' || !/^[a-f0-9]{64}$/.test(supplied) || !timingSafeEqual(Buffer.from(supplied),Buffer.from(token))) return response(res,403,{error:'アクセスできません'});
     if(req.method==='GET' && u.pathname==='/api/status') return response(res,200,sendStatus());
+    if(req.method==='GET' && u.pathname==='/api/files') {
+      if(state.busy) return response(res,409,{error:'処理中です'});
+      try {savedFiles=await listSaved(dir);return response(res,200,{files:savedFiles});}
+      catch {return response(res,500,{error:'保存履歴を読み込めません'});}
+    }
     if(req.method!=='POST' || req.headers.origin !== `http://127.0.0.1:${server.address().port}`) return response(res,403,{error:'アクセスできません'});
     if(state.busy) return response(res,409,{error:'処理中です'});
     try {
       const body=await readJson(req);
       if(u.pathname==='/api/discover' && ['year','daimon'].includes(body.mode)) {void discover(body.mode);return response(res,202,{});}
+      if(u.pathname==='/api/rename') {
+        try {datePrefix(body.date);} catch {return response(res,400,{error:'有効な日付を選択してください'});}
+        if(!Array.isArray(body.indices) || !body.indices.length || body.indices.length>savedFiles.length ||
+          body.indices.some(i=>!Number.isInteger(i)||i<0||i>=savedFiles.length) || new Set(body.indices).size!==body.indices.length) return response(res,400,{error:'ファイルを選択してください'});
+        state.busy=true;const results=[];
+        try {
+          for(const i of body.indices) {
+            const file=savedFiles[i];
+            try {const result=await renameSaved(dir,file.path,body.date);results.push({name:file.name,status:result.status,path:result.path});}
+            catch(e) {results.push({name:file.name,status:'failed',error:/^(同名|対象ファイル|保存履歴|複数の保存履歴)/.test(e.message)?e.message:'変更できませんでした'});}
+          }
+          savedFiles=await listSaved(dir);
+          return response(res,200,{results,files:savedFiles});
+        } finally {state.busy=false;}
+      }
       if(u.pathname==='/api/start') {
         if(!state.mode || !Array.isArray(body.indices) || !body.indices.length || body.indices.length>state.items.length ||
           body.indices.some(i=>!Number.isInteger(i)||i<0||i>=state.items.length) || new Set(body.indices).size!==body.indices.length) return response(res,400,{error:'対象を選択してください'});
