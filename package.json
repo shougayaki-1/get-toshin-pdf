@@ -10,7 +10,8 @@
     "capture": "node src/capture.js",
     "process": "node src/process.js",
     "test": "node --test",
-    "daimon": "node src/daimon.js"
+    "daimon": "node src/daimon.js",
+    "year": "node src/year.js"
   },
   "dependencies": {
     "pdf-lib": "^1.17.1",
