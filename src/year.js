@@ -91,6 +91,20 @@ export async function openYearList(page) {
   const findYear = () => page.frames().find(f => /^https:\/\/pos\.toshin\.com\/TGT\/OPCTTS\/OPCTTS_Student\/NendobetsuTop(?:[/?]|$)/.test(f.url()));
   let frame = findYear();
   if (frame) { await frame.locator('table.nendobetsu-ichiran').waitFor({timeout:20000}); return frame; }
+  // An exercise page has a site-provided back link but no course navigation.
+  for (const f of page.frames()) {
+    if (!/^https:\/\/pos\.toshin\.com\/TGT\/OPCTTS\/OPCTTS_Student\/EnshuKaishi(?:[/?]|$)/.test(f.url())) continue;
+    const back = f.getByRole('link', {name:'戻る', exact:true}).first();
+    if (!await back.count()) break;
+    const href = await back.getAttribute('href');
+    const target = href && new URL(href, f.url());
+    if (target && target.protocol === 'https:' && target.hostname === 'pos.toshin.com' && /\/(NendobetsuTop|DaimonBunyabetsuTop)\/?$/.test(target.pathname)) {
+      await Promise.all([f.waitForURL(/\/(NendobetsuTop|DaimonBunyabetsuTop)(?:[/?]|$)/,{timeout:20000}), back.click()]);
+      frame = findYear();
+      if (frame) {await frame.locator('table.nendobetsu-ichiran').waitFor({timeout:20000});return frame;}
+    }
+    break;
+  }
   for (const f of page.frames()) {
     if (!f.url().startsWith('https://pos.toshin.com/')) continue;
     const link = f.getByRole('link', {name:'年度別演習', exact:true});

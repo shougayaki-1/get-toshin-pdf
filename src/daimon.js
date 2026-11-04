@@ -17,6 +17,10 @@ export function filenamePart(value) {
 export function questionFilename(index, title) {
   return `${String(index).padStart(2, '0')}-${filenamePart(title)}.pdf`;
 }
+export function inferSubject(category) {
+  const match = /^大問別演習[\s　]+([^\s　]+)/u.exec(category.trim());
+  return match?.[1] || null;
+}
 export function questionKey(setId, itemId) {
   return createHash('sha256').update(JSON.stringify([setId, itemId])).digest('hex');
 }
@@ -29,7 +33,7 @@ export function validSinglePrint(rawUrl, setId, itemId) {
 async function exists(file) {
   try { return (await stat(file)).isFile(); } catch (e) { if (e.code === 'ENOENT') return false; throw e; }
 }
-async function readState(dir) {
+export async function readState(dir) {
   try {
     const state = JSON.parse(await readFile(path.join(dir, 'daimon-manifest.json'), 'utf8'));
     if (state.version !== 1 || !Array.isArray(state.items)) throw new Error('Invalid manifest');
@@ -100,7 +104,7 @@ export async function collectOne({ page, frame, item, setId, subject, dir, state
 }
 
 export async function run() {
-  const options = parseOptions(process.argv.slice(2), { requireSubject: true });
+  const options = parseOptions(process.argv.slice(2));
   const dir = options.dataDir;
   await mkdir(path.join(dir, 'browser-profile'), { recursive: true, mode: 0o700 });
   const state = await readState(dir);
@@ -121,7 +125,11 @@ export async function run() {
       const back = await frame.locator('a[href*="DaimonBunyabetsuTop"]').first().getAttribute('href');
       const setId = back && new URL(back, frame.url()).searchParams.get('enshuSetId');
       const category = (await frame.locator('h3').first().innerText()).replace(/^\s*[英国数理社情]\s*/, '').trim();
-      if (!category.includes(options.subject)) { console.log('指定した科目と画面の分野名が一致しません。--subject を確認してください。'); continue; }
+      let subject = options.subject || inferSubject(category);
+      if (!subject) { subject = (await input.question('科目名を判別できません。科目名を入力してください > ')).trim(); }
+      if (!subject) { console.log('科目名が必要です。'); continue; }
+      if (options.subject && !category.includes(options.subject)) { console.log('指定した科目と画面の分野名が一致しません。--subject を確認してください。'); continue; }
+      console.log(`科目: ${subject}`);
       const items = await listQuestions(frame);
       if (!setId || !items.length || items.some(q => !q.id || !q.title || !/^\d+$/.test(q.number))) {
         console.log('一覧の構造を確認できません。処理を中止しました。'); continue;
@@ -138,7 +146,7 @@ export async function run() {
         for (const item of selected) {
           attempted++;
           try {
-            const result = await collectOne({ page, frame, item, setId, subject: options.subject, dir, state });
+            const result = await collectOne({ page, frame, item, setId, subject, dir, state });
             if (result === 'saved') saved++; else skipped++;
             console.log(`${result === 'saved' ? '保存' : 'スキップ'}: ${questionFilename(item.number, item.title)}`);
           } catch (e) {

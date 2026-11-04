@@ -32,3 +32,19 @@ test('lists year/subject pairs, downloads separately and resumes', async t => {
   assert.equal((await PDFDocument.load(await readFile(path.join(dir,state.items[0].path)))).getPageCount(),1);
   assert.equal(await collectYear({page,frame,item:items[0],dir,state,request}),'skipped'); assert.equal(requests,2);
 });
+
+test('returns from category exercise to the year list using site links', async t => {
+  const {openYearList}=await import('../src/year.js');
+  const browser=await chromium.launch({headless:true});t.after(()=>browser.close());
+  const context=await browser.newContext();const page=await context.newPage();
+  await context.route('https://pos.toshin.com/**', async route=>{
+    const url=new URL(route.request().url());let body;
+    if(url.pathname.endsWith('PosApplication.aspx')) body='<iframe src="/TGT/OPCTTS/OPCTTS_Student/EnshuKaishi"></iframe>';
+    else if(url.pathname.endsWith('EnshuKaishi')) body='<a href="DaimonBunyabetsuTop?enshuSetId=x">戻る</a>';
+    else if(url.pathname.endsWith('DaimonBunyabetsuTop')) body='<a href="NendobetsuTop">年度別演習</a>';
+    else body='<table class="nendobetsu-ichiran"><tr><td>一覧</td></tr></table>';
+    await route.fulfill({contentType:'text/html; charset=utf-8',body});
+  });
+  await page.goto('https://pos.toshin.com/SSO1/SSOMenu/PosApplication.aspx');
+  const frame=await openYearList(page);assert.match(frame.url(),/NendobetsuTop/);
+});
