@@ -59,8 +59,9 @@ test('GUI discovers category and downloads two questions without manual subject'
 });
 
 test('GUI discovers and collects a year entry', async t => {
-  const {mkdtemp,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const path=(await import('node:path')).default;const {PDFDocument}=await import('pdf-lib');
+  const {mkdtemp,rm,mkdir,readdir}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const path=(await import('node:path')).default;const {PDFDocument}=await import('pdf-lib');
   const dir=await mkdtemp(path.join(tmpdir(),'gui-year-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const destination=path.join(dir,'destination');await mkdir(destination);
   const browser=await chromium.launch({headless:true});t.after(()=>browser.close());const context=await browser.newContext();
   const source=await PDFDocument.create();source.addPage([300,400]).drawText('question');const pdf=Buffer.from(await source.save());const request={get:async()=>({ok:()=>true,body:async()=>pdf})};
   await context.route('https://pos.toshin.com/**',async route=>{
@@ -73,9 +74,11 @@ test('GUI discovers and collects a year entry', async t => {
   });
   const pos=await context.newPage();await pos.goto('https://pos.toshin.com/SSO1/SSOMenu/PosApplication.aspx');
   const {server,url}=await createGuiServer({context,dir,request});t.after(()=>new Promise(resolve=>server.close(resolve)));
-  const gui=await context.newPage();await gui.goto(url);await gui.getByRole('button',{name:'年度別を読み込む'}).click();
+  const gui=await context.newPage();await gui.goto(url);await gui.locator('#data-dir').fill(destination);await gui.locator('#set-data-dir').click();
+  await gui.locator('#data-dir-status').getByText(/destination\/output/).waitFor();await gui.getByRole('button',{name:'年度別を読み込む'}).click();
   await gui.getByText('1件の候補を読み込みました。').waitFor();await gui.getByLabel('表示中をすべて選択').check();
   await gui.getByRole('button',{name:'選択した問題を取得'}).click();await gui.getByText('取得が完了しました。').waitFor({timeout:15000});await gui.getByText(/保存 1件/).waitFor();
+  assert.equal((await readdir(path.join(destination,'output','年度別','国語'))).length,1);
   await gui.getByRole('button',{name:'前回の年度別取得を再開'}).click();
   await gui.getByText(/前回の1件を選択しました/).waitFor({timeout:10000});
   assert.equal(await gui.locator('#items input:checked').count(),1);
@@ -118,4 +121,28 @@ test('GUI selects visible ranges and creates dated copies', async t => {
   assert.equal(await fs.readFile(path.join(dir,'output','問題2.pdf'),'utf8'),'PDF 2');
   assert.equal(await fs.readFile(path.join(dir,'output','20261105-問題2.pdf'),'utf8'),'PDF 2');
   assert.equal(await page.locator('#saved-files input').count(),8);
+});
+
+test('GUI switches output roots and dates PDFs from an arbitrary folder', async t => {
+  const fs=await import('node:fs/promises'), {tmpdir}=await import('node:os'), path=(await import('node:path')).default;
+  const dir=await fs.mkdtemp(path.join(tmpdir(),'gui-folders-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));
+  const out=path.join(dir,'other'), external=path.join(dir,'external');await fs.mkdir(out);await fs.mkdir(path.join(external,'nested'),{recursive:true});
+  await fs.writeFile(path.join(external,'nested','問題.pdf'),'external');
+  await fs.mkdir(path.join(dir,'output'));await fs.writeFile(path.join(dir,'output','取得済み.pdf'),'tracked');
+  await fs.writeFile(path.join(dir,'year-manifest.json'),JSON.stringify({version:1,items:[{key:'old',path:'output/取得済み.pdf'}]}));
+  const {server,url}=await createGuiServer({context:{pages:()=>[]},dir});t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const browser=await chromium.launch({headless:true});t.after(()=>browser.close());const page=await browser.newPage();
+  await page.goto(url);await page.locator('#data-dir').fill(out);await page.locator('#set-data-dir').click();
+  await page.locator('#data-dir-status').getByText(/other\/output/).waitFor();
+  await page.locator('#files-dir').fill(external);await page.locator('#load-folder').click();
+  await page.locator('#saved-files input').first().check();await page.locator('#rename-date').fill('2026-11-05');
+  await page.getByLabel('元を残してコピーを作成').check();await page.locator('#rename-start').click();
+  await page.getByText('1件を処理しました。失敗 0件。').waitFor();
+  assert.equal(await fs.readFile(path.join(external,'nested','20261105-問題.pdf'),'utf8'),'external');
+  assert.equal(await fs.readFile(path.join(external,'nested','問題.pdf'),'utf8'),'external');
+  assert.equal(JSON.parse(await fs.readFile(path.join(dir,'gui-settings.json'),'utf8')).dataDir,await fs.realpath(out));
+  await page.locator('#files-dir').fill(path.join(dir,'output'));await page.locator('#load-folder').click();
+  await page.locator('#saved-files input').first().check();await page.getByLabel('ファイル名を変更').check();await page.locator('#rename-start').click();
+  await page.getByText('1件を処理しました。失敗 0件。').waitFor();
+  assert.equal(JSON.parse(await fs.readFile(path.join(dir,'year-manifest.json'),'utf8')).items[0].path,'output/20261105-取得済み.pdf');
 });

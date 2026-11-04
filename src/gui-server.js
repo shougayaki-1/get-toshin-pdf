@@ -1,12 +1,13 @@
 import http from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFile, rename, writeFile } from 'node:fs/promises';
-import { spawn } from 'node:child_process';
+import { readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { collectOne, inferSubject, listQuestions, readState } from './daimon.js';
 import { collectYear, listYears, openYearList, readYearState } from './year.js';
-import { copySaved, datePrefix, listSaved, renameSaved } from './rename-files.js';
+import { copySaved, dateFolderFile, datePrefix, listFolder, listSaved, renameSaved } from './rename-files.js';
 import { openCategoryList, listCategories, enterCategory, returnToCategories } from './categories.js';
 import { retryTransient } from './retry.js';
 
@@ -23,12 +24,25 @@ function getPosPage(context) {
     context.pages().find(p => p.url().startsWith('https://pos.toshin.com/'));
 }
 export async function createGuiServer({context, dir, request}) {
+  const settingsDir=dir;
+  let knownDirs=[await realpath(dir).catch(()=>path.resolve(dir))];
+  try {const settings=JSON.parse(await readFile(path.join(settingsDir,'gui-settings.json'),'utf8'));if(Array.isArray(settings.knownDirs))knownDirs.push(...settings.knownDirs.filter(x=>typeof x==='string' && path.isAbsolute(x)));if(typeof settings.dataDir==='string' && (await stat(settings.dataDir)).isDirectory())dir=await realpath(settings.dataDir);} catch {}
+  knownDirs=[...new Set([...knownDirs,path.resolve(dir)])];
   const token = randomBytes(32).toString('hex');
   const state = { mode:null, items:[], frame:null, page:null, subject:null, setId:null, category:null, busy:false,
     cancelRequested:false, revision:0, resumeIndices:[], status:'POSにログインしてから、年度別または大問別の候補を読み込んでください。', progress:[], counts:null };
-  let savedFiles=[];
+  let savedFiles=[], filesRoot=null;
+  async function readSelectedFiles() {
+    const tracked=await listSaved(dir);
+    if(!filesRoot)return tracked.map(f=>({...f,tracked:true}));
+    const map=new Map();
+    for(const root of knownDirs)for(const file of await listSaved(root)) {
+      const key=path.resolve(root,file.path), owners=map.get(key)||[];owners.push({dir:root,path:file.path});map.set(key,owners);
+    }
+    return (await listFolder(filesRoot)).map(f=>({...f,owners:map.get(path.resolve(filesRoot,f.path))||[]}));
+  }
   const sendStatus = () => ({ mode:state.mode, items:state.items.map((x,i)=>({index:i, title:state.mode==='year' ? `${x.round} / ${x.subject}` : state.mode==='categories' ? `${x.subject.name} / ${x.title}` : `${x.number} - ${x.title}`, subject:state.mode==='year' ? x.subject : state.mode==='categories' ? x.subject.name : state.subject})),
-    subject:state.subject, category:state.category, revision:state.revision, resumeIndices:state.resumeIndices, busy:state.busy, status:state.status, progress:state.progress, counts:state.counts, dataDir:dir });
+    subject:state.subject, category:state.category, revision:state.revision, resumeIndices:state.resumeIndices, busy:state.busy, status:state.status, progress:state.progress, counts:state.counts, dataDir:dir,outputDir:path.join(dir,'output') });
   const reset = () => { state.revision++;state.resumeIndices=[];state.items=[];state.mode=null;state.frame=null;state.page=null;state.subject=null;state.counts=null;state.progress=[]; };
   async function discover(mode, resume=false) {
     reset(); state.busy=true; state.status='候補を読み込んでいます…';
@@ -187,7 +201,7 @@ export async function createGuiServer({context, dir, request}) {
     if(req.method==='GET' && u.pathname==='/api/status') return response(res,200,sendStatus());
     if(req.method==='GET' && u.pathname==='/api/files') {
       if(state.busy) return response(res,409,{error:'処理中です'});
-      try {savedFiles=await listSaved(dir);return response(res,200,{files:savedFiles});}
+      try {filesRoot=null;savedFiles=await readSelectedFiles();return response(res,200,{files:savedFiles});}
       catch {return response(res,500,{error:'保存履歴を読み込めません'});}
     }
     if(req.method!=='POST' || req.headers.origin !== `http://127.0.0.1:${server.address().port}`) return response(res,403,{error:'アクセスできません'});
@@ -195,6 +209,27 @@ export async function createGuiServer({context, dir, request}) {
     if(state.busy) return response(res,409,{error:'処理中です'});
     try {
       const body=await readJson(req);
+      if(u.pathname==='/api/choose-folder') {
+        if(process.platform!=='darwin')return response(res,400,{error:'フォルダのパスを入力してください'});
+        try {const {stdout}=await promisify(execFile)('/usr/bin/osascript',['-e','POSIX path of (choose folder with prompt "フォルダを選択してください")']);return response(res,200,{path:stdout.trim()});}
+        catch {return response(res,400,{error:'フォルダ選択をキャンセルしました'});}
+      }
+      if(u.pathname==='/api/data-dir' || u.pathname==='/api/folder-files') {
+        if(typeof body.path!=='string' || !path.isAbsolute(body.path))return response(res,400,{error:'フォルダの絶対パスを指定してください'});
+        let selected;
+        try {selected=await realpath(body.path);if(!(await stat(selected)).isDirectory())throw Error();}
+        catch {return response(res,400,{error:'フォルダが見つかりません'});}
+        if(u.pathname==='/api/data-dir') {
+          const nextDirs=[...new Set([...knownDirs,selected])];
+          try {await writeFile(path.join(settingsDir,'gui-settings.json'),JSON.stringify({dataDir:selected,knownDirs:nextDirs})+'\n',{mode:0o600});}
+          catch {return response(res,500,{error:'保存先の設定を書き込めません'});}
+          dir=selected;knownDirs=nextDirs;filesRoot=null;savedFiles=[];state.counts=null;
+          state.status='保存先を変更しました。取得履歴は保存先ごとに管理されます。';
+          return response(res,200,{dataDir:dir,outputDir:path.join(dir,'output')});
+        }
+        try {filesRoot=selected;savedFiles=await readSelectedFiles();return response(res,200,{files:savedFiles,root:filesRoot});}
+        catch {filesRoot=null;return response(res,500,{error:'フォルダを読み込めません'});}
+      }
       if(u.pathname==='/api/discover' && ['year','daimon','categories'].includes(body.mode)) {void discover(body.mode,body.resume===true && ['year','categories'].includes(body.mode));return response(res,202,{});}
       if(u.pathname==='/api/rename') {
         try {datePrefix(body.date);} catch {return response(res,400,{error:'有効な日付を選択してください'});}
@@ -206,10 +241,13 @@ export async function createGuiServer({context, dir, request}) {
         try {
           for(const i of body.indices) {
             const file=savedFiles[i];
-            try {const result=await (mode==='copy'?copySaved:renameSaved)(dir,file.path,body.date);results.push({name:file.name,status:result.status,path:result.path});}
+            try {const owners=filesRoot?file.owners:[{dir,path:file.path}];
+              if(owners.length>1)throw Error('複数の保存履歴が同じファイルを参照しています');
+              const result=owners.length ? await (mode==='copy'?copySaved:renameSaved)(owners[0].dir,owners[0].path,body.date) : await dateFolderFile(filesRoot,file.path,body.date,mode);
+              results.push({name:file.name,status:result.status,path:result.path});}
             catch(e) {results.push({name:file.name,status:'failed',error:/^(同名|対象ファイル|保存履歴|複数の保存履歴)/.test(e.message)?e.message:'変更できませんでした'});}
           }
-          savedFiles=await listSaved(dir);
+          savedFiles=await readSelectedFiles();
           return response(res,200,{results,files:savedFiles});
         } finally {state.busy=false;}
       }

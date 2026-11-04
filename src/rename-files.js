@@ -1,4 +1,4 @@
-import { copyFile, link, lstat, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, link, lstat, readFile, readdir, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -96,4 +96,34 @@ export async function copySaved(dir,relative,date) {
     if(e.code==='EEXIST')throw Error('同名のファイルが既にあります');
     throw e;
   } finally {await unlink(temp).catch(()=>{});}
+}
+
+// Walk only actual directories and files; do not follow links out of the chosen folder.
+export async function listFolder(root) {
+  const base=await realpath(root), result=[];
+  async function walk(folder) {
+    for(const entry of await readdir(folder,{withFileTypes:true})) {
+      const full=path.join(folder,entry.name);
+      if(entry.isDirectory())await walk(full);
+      else if(entry.isFile() && /\.pdf$/i.test(entry.name))result.push({path:path.relative(base,full),name:entry.name,folder:path.relative(base,folder)||'.'});
+    }
+  }
+  await walk(base);return result.sort((a,b)=>a.path.localeCompare(b.path,'ja'));
+}
+export async function dateFolderFile(root,relative,date,mode) {
+  if(!['rename','copy'].includes(mode) || typeof relative!=='string' || path.isAbsolute(relative))throw Error('対象ファイルが見つかりません');
+  const base=await realpath(root), file=path.resolve(base,relative), rel=path.relative(base,file);
+  if(!rel || rel==='..' || rel.startsWith('..'+path.sep) || path.isAbsolute(rel) || !/\.pdf$/i.test(file))throw Error('対象ファイルが見つかりません');
+  const actual=await realpath(file).catch(()=>null);
+  if(!actual || actual!==file || !(await lstat(file)).isFile())throw Error('対象ファイルが見つかりません');
+  const target=path.join(path.dirname(file),datedName(path.basename(file),date));
+  if(mode==='rename' && target===file)return {status:'skipped',path:relative};
+  const temp=path.join(path.dirname(file),`.date-copy-${randomBytes(12).toString('hex')}.tmp`);
+  try {
+    if(mode==='copy') {await copyFile(file,temp,constants.COPYFILE_EXCL);await link(temp,target);return {status:'created',path:path.relative(base,target)};}
+    await link(file,target);
+    try {await unlink(file);} catch {return {status:'copied',path:path.relative(base,target)};}
+    return {status:'renamed',path:path.relative(base,target)};
+  } catch(e) {if(e.code==='EEXIST')throw Error('同名のファイルが既にあります');throw e;}
+  finally {await unlink(temp).catch(()=>{});}
 }

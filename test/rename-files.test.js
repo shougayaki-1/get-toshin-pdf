@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,readFile,writeFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {copySaved,datePrefix,datedName,listSaved,renameSaved} from '../src/rename-files.js';
+import {copySaved,dateFolderFile,datePrefix,datedName,listFolder,listSaved,renameSaved} from '../src/rename-files.js';
 
 test('checks calendar dates and replaces an existing date prefix',()=>{
   assert.equal(datedName('01-問題.pdf','2026-11-05'),'20261105-01-問題.pdf');
@@ -59,4 +59,15 @@ test('dated copies preserve the original and history, avoid collisions, and rema
   const renamed=await renameSaved(dir,copy.path,'2026-11-06');
   assert.equal(renamed.status,'renamed');assert.equal((await listSaved(dir)).length,2);
   assert.equal(await readFile(path.join(dir,original),'utf8'),'example');
+});
+
+test('external folder selection stays inside the folder and avoids overwrites',async t=>{
+  const fs=await import('node:fs/promises');const dir=await mkdtemp(path.join(tmpdir(),'external-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  await mkdir(path.join(dir,'nested'));await writeFile(path.join(dir,'nested','問題.pdf'),'content');
+  await fs.symlink(path.join(dir,'nested'),path.join(dir,'link'));
+  assert.equal((await listFolder(dir)).length,1);
+  await assert.rejects(dateFolderFile(dir,'../outside.pdf','2026-11-05','rename'));
+  await assert.rejects(dateFolderFile(dir,'link/問題.pdf','2026-11-05','rename'));
+  const result=await dateFolderFile(dir,'nested/問題.pdf','2026-11-05','copy');
+  assert.equal(result.status,'created');await assert.rejects(dateFolderFile(dir,'nested/問題.pdf','2026-11-05','rename'),/同名/);
 });

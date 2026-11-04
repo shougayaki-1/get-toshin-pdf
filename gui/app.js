@@ -21,17 +21,20 @@ async function api(path,body) {
   const data=await result.json(); if(!result.ok)throw Error(data.error||'操作できません'); return data;
 }
 function render(s) {
+  if(!current || current.dataDir!==s.dataDir) $('data-dir').value=s.dataDir;
   const changed=!current || current.revision!==s.revision || current.mode!==s.mode || JSON.stringify(current.items)!==JSON.stringify(s.items);
   if(changed){selection=new Set(s.resumeIndices || []);itemAnchor=null;filter='';$('filter').value='';
     const subjects=[...new Set(s.items.map(x=>x.subject).filter(Boolean))];
     $('subject-filter').replaceChildren(new Option('すべての科目',''),...subjects.map(x=>new Option(x,x)));
   }
   current=s;$('status').textContent=s.status;$('year').disabled=s.busy;$('resume-year').disabled=s.busy;$('daimon').disabled=s.busy;$('categories').disabled=s.busy;$('resume-bulk').disabled=s.busy;$('cancel').hidden=!s.busy||!s.counts;
+  $('set-data-dir').disabled=s.busy;$('choose-data-dir').disabled=s.busy;$('load-folder').disabled=s.busy;$('choose-files-dir').disabled=s.busy;$('load-files').disabled=s.busy;
+  $('data-dir-status').textContent=`PDFの保存先: ${s.outputDir}`;
   $('selection').hidden=!s.mode;$('results').hidden=!s.counts;
   $('category').textContent=s.mode==='daimon' ? `${s.category}（科目: ${s.subject||'要入力'}）` : s.mode==='categories' ? '科目や分野を選ぶと、含まれる全問題を1問ずつ取得します。' : '年度・科目を選択してください。';
   $('subject-filter-row').hidden=!['year','categories'].includes(s.mode);
   $('subject-row').hidden=s.mode!=='daimon'||!!s.subject;
-  $('count').textContent=`${s.items.length}件`;$('path').textContent=s.dataDir;
+  $('count').textContent=`${s.items.length}件`;$('path').textContent=s.outputDir;
   $('counts').textContent=s.counts ? `保存 ${s.counts.saved}件　スキップ ${s.counts.skipped}件　失敗 ${s.counts.failed}件　未処理 ${s.counts.remaining}${s.mode==='categories'?'分野':'件'}` : '';
   $('progress').replaceChildren(...s.progress.map(text=>{const li=document.createElement('li');li.textContent=text;return li;}));
   renderItems();
@@ -50,6 +53,10 @@ $('filter').addEventListener('input',e=>{filter=e.target.value.trim().toLocaleLo
 $('subject-filter').addEventListener('change',()=>{itemAnchor=null;renderItems();});
 $('all').addEventListener('change',e=>{for(const x of current.items.filter(x=>x.title.toLocaleLowerCase().includes(filter) && (!$('subject-filter').value || x.subject===$('subject-filter').value)))e.target.checked?selection.add(x.index):selection.delete(x.index);renderItems();});
 async function action(path,body){try{await api(path,body);await refresh();}catch(e){$('status').textContent=e.message;}}
+async function chooseFolder(input,status){try{const data=await api('/api/choose-folder',{});$(input).value=data.path;}catch(e){$(status).textContent=e.message;}}
+$('choose-data-dir').addEventListener('click',()=>chooseFolder('data-dir','data-dir-status'));
+$('choose-files-dir').addEventListener('click',()=>chooseFolder('files-dir','rename-status'));
+$('set-data-dir').addEventListener('click',async()=>{try{const data=await api('/api/data-dir',{path:$('data-dir').value.trim()});$('data-dir').value=data.dataDir;$('rename-panel').hidden=true;await refresh();}catch(e){$('data-dir-status').textContent=e.message;}});
 $('year').addEventListener('click',()=>action('/api/discover',{mode:'year'}));
 $('resume-year').addEventListener('click',()=>action('/api/discover',{mode:'year',resume:true}));
 $('daimon').addEventListener('click',()=>action('/api/discover',{mode:'daimon'}));
@@ -86,6 +93,7 @@ document.querySelectorAll('input[name=date-action]').forEach(r=>r.addEventListen
 $('rename-filter').addEventListener('input',()=>{savedAnchor=null;renderSaved();});$('rename-date').addEventListener('input',renderSaved);
 $('rename-all').addEventListener('change',e=>{const term=$('rename-filter').value.trim().toLocaleLowerCase();savedFiles.forEach((f,i)=>{if(`${f.name} ${f.folder}`.toLocaleLowerCase().includes(term))e.target.checked?renamedSelection.add(i):renamedSelection.delete(i);});renderSaved();});
 $('load-files').addEventListener('click',async()=>{try{const data=await api('/api/files');savedFiles=data.files;renamedSelection.clear();savedAnchor=null;$('rename-panel').hidden=false;$('rename-status').textContent=savedFiles.length?`${savedFiles.length}件のPDFがあります。`:'保存済みPDFがありません。';$('rename-results').replaceChildren();renderSaved();}catch(e){$('rename-status').textContent=e.message;}});
+$('load-folder').addEventListener('click',async()=>{try{const data=await api('/api/folder-files',{path:$('files-dir').value.trim()});savedFiles=data.files;renamedSelection.clear();savedAnchor=null;$('rename-panel').hidden=false;$('rename-status').textContent=`${data.root}：${savedFiles.length}件のPDFがあります。`;$('rename-results').replaceChildren();renderSaved();}catch(e){$('rename-status').textContent=e.message;}});
 $('rename-start').addEventListener('click',async()=>{
   const button=$('rename-start'),mode=document.querySelector('input[name=date-action]:checked').value;button.disabled=true;$('load-files').disabled=true;$('rename-status').textContent=mode==='copy'?'コピーを作成しています…':'ファイル名を変更しています…';
   try {const data=await api('/api/rename',{indices:[...renamedSelection].sort((a,b)=>a-b),date:$('rename-date').value,mode});

@@ -2,6 +2,7 @@ node_modules/
 .local/
 *.pdf
 date-copies.json
+gui-settings.json
 .env
 .env.*
 !.env.example
