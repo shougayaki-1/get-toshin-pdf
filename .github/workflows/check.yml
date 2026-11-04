@@ -22,4 +22,5 @@ jobs:
           node --check src/layout.js
           node --check src/pdf-transform.js
           node --check src/process.js
+      - run: npx playwright install --with-deps chromium
       - run: npm test
