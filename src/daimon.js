@@ -1,3 +1,4 @@
+import { httpError } from './retry.js';
 import { chromium } from 'playwright';
 import { PDFDocument } from 'pdf-lib';
 import { createHash, randomBytes } from 'node:crypto';
@@ -80,7 +81,7 @@ export async function collectOne({ page, frame, item, setId, subject, dir, state
     const response = await request.get(pdfUrl, {
       timeout: 30000, maxRedirects: 0, headers: { referer: popup.url() }
     });
-    if (!response.ok()) throw new Error(`HTTP ${response.status()}`);
+    if (!response.ok()) throw httpError(response);
     const bytes = await response.body();
     if (!isPdfBytes(bytes)) throw new Error('PDFではありません。ログイン状態を確認してください');
     const source = await PDFDocument.load(bytes);

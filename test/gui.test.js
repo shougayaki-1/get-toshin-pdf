@@ -49,7 +49,7 @@ test('GUI discovers category and downloads two questions without manual subject'
   });
   const pos=await context.newPage();await pos.goto('https://pos.toshin.com/SSO1/SSOMenu/PosApplication.aspx');
   const {server,url}=await createGuiServer({context,dir,request});t.after(()=>new Promise(resolve=>server.close(resolve)));
-  const gui=await context.newPage();await gui.goto(url);await gui.getByRole('button',{name:'大問別を読み込む'}).click();
+  const gui=await context.newPage();await gui.goto(url);await gui.getByRole('button',{name:'大問別の問題を読み込む'}).click();
   await gui.getByText('2件の候補を読み込みました。').waitFor();
   await gui.getByLabel('表示中をすべて選択').check();
   await gui.getByRole('button',{name:'選択した問題を取得'}).click();
@@ -75,6 +75,11 @@ test('GUI discovers and collects a year entry', async t => {
   const gui=await context.newPage();await gui.goto(url);await gui.getByRole('button',{name:'年度別を読み込む'}).click();
   await gui.getByText('1件の候補を読み込みました。').waitFor();await gui.getByLabel('表示中をすべて選択').check();
   await gui.getByRole('button',{name:'選択した問題を取得'}).click();await gui.getByText('取得が完了しました。').waitFor({timeout:15000});await gui.getByText(/保存 1件/).waitFor();
+  await gui.getByRole('button',{name:'前回の年度別取得を再開'}).click();
+  await gui.getByText(/前回の1件を選択しました/).waitFor({timeout:10000});
+  assert.equal(await gui.locator('#items input:checked').count(),1);
+  await gui.getByRole('button',{name:'選択した問題を取得'}).click();
+  await gui.getByText('取得が完了しました。').waitFor({timeout:10000});await gui.getByText(/スキップ 1件/).waitFor();
 });
 
 test('GUI renames selected saved PDFs and updates their history', async t => {

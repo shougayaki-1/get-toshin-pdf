@@ -1,3 +1,4 @@
+import { httpError } from './retry.js';
 import { chromium } from 'playwright';
 import { PDFDocument } from 'pdf-lib';
 import { createHash, randomBytes } from 'node:crypto';
@@ -65,7 +66,7 @@ export async function collectYear({ page, frame, item, dir, state, request = pag
       const url = links.find(isPdfDownloadUrl);
       if (!url) throw Error('PDFリンクがありません');
       const response = await request.get(url, {timeout:30000, maxRedirects:0, headers:{referer:popup.url()}});
-      if (!response.ok()) throw Error(`HTTP ${response.status()}`);
+      if (!response.ok()) throw httpError(response);
       const bytes = await response.body();
       if (!isPdfBytes(bytes) || !(await PDFDocument.load(bytes)).getPageCount()) throw Error('PDF応答ではありません');
       const output = await transformPdf(bytes, PDFDocument, isJapaneseSubject(item.subject) ? 'rtl' : 'ltr');

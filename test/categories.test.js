@@ -1,0 +1,55 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright';
+import { PDFDocument } from 'pdf-lib';
+import { mkdtemp,readFile,rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { createGuiServer } from '../src/gui-server.js';
+
+test('collects all selected categories across subjects and offers resume', async t=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'bulk-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const browser=await chromium.launch({headless:true});t.after(()=>browser.close());const context=await browser.newContext();
+  const pdf=await PDFDocument.create();pdf.addPage([300,400]).drawText('test');const bytes=Buffer.from(await pdf.save());
+  let requests=0;const request={get:async()=>{requests++;return {ok:()=>true,body:async()=>bytes};}};
+  const base='/TGT/OPCTTS/OPCTTS_Student/';
+  await context.route('https://pos.toshin.com/**',async route=>{
+    const u=new URL(route.request().url());let body;
+    if(u.pathname.endsWith('PosApplication.aspx'))body=`<iframe src="${base}DaimonBunyabetsuTop"></iframe>`;
+    else if(u.pathname.endsWith('EnshuKaishi')) {
+      const set=new URLSearchParams(route.request().postData()||'').get('enshuSetId');
+      const subject=set==='jp'?'国語':'数学';
+      body=`<a href="DaimonBunyabetsuTop?enshuSetId=${set}">戻る</a><h3>${subject} 大問別演習　${subject}　分野</h3><ul>${['a','b'].map((q,i)=>`<li class="questions-item"><h4><span class="flag"><small>${i+1}</small></span><span class="questions-item-title">${subject} 問題 ${i+1}</span></h4><label class="checkbox"><input class="chkDaimon" type="checkbox" value="${set+q}"></label></li>`).join('')}</ul><button onclick="window.open('MondaiKaitoInsatsu?EnshuSetId=${set}&DaimonId='+document.querySelector('.chkDaimon:checked').value)">問題・解答用紙 印刷</button>`;
+    } else if(u.pathname.endsWith('MondaiKaitoInsatsu'))body='<a href="Contents/GetMondaiPdf?daimonId=opaque">PDF</a>';
+    else body=`<label class="criteria-label"><input type="radio" name="科目" value="jp" checked><span>国語</span></label><label class="criteria-label"><input type="radio" name="科目" value="math"><span>数学</span></label>${['jp','math'].map(id=>`<div class="card-front" data-id="${id}" ${id==='math'?'hidden':''}><h4><span class="card-title-module2">大問別演習　${id==='jp'?'国語':'数学'}　分野</span></h4><form method="post" action="${base}EnshuKaishi"><input type="hidden" name="enshuSetId" value="${id}"><button type="submit">演習</button></form></div>`).join('')}<script>document.querySelectorAll('input[type=radio]').forEach(r=>r.addEventListener('change',()=>document.querySelectorAll('.card-front').forEach(c=>c.hidden=c.dataset.id!==r.value)))</script>`;
+    await route.fulfill({contentType:'text/html; charset=utf-8',body});
+  });
+  const pos=await context.newPage();await pos.goto('https://pos.toshin.com/SSO1/SSOMenu/PosApplication.aspx');
+  const {server,url}=await createGuiServer({context,dir,request});t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const gui=await context.newPage();await gui.goto(url);
+  await gui.getByRole('button',{name:'大問別の全分野を読み込む'}).click();
+  await gui.getByText('2件の候補を読み込みました。').waitFor({timeout:10000});
+  await gui.locator('#subject-filter').selectOption({label:'国語'});
+  assert.equal(await gui.locator('#items .item').count(),1);
+  await gui.locator('#subject-filter').selectOption('');await gui.locator('#all').check();
+  await gui.getByRole('button',{name:'選択した問題を取得'}).click();
+  await gui.getByText(/保存 1件/).waitFor({timeout:15000});
+  await gui.getByRole('button',{name:'取得を停止'}).click();
+  await gui.getByText(/停止しました。保存済みをスキップ/).waitFor({timeout:15000});
+  assert.ok(requests<4);
+  const interrupted=JSON.parse(await readFile(path.join(dir,'bulk-categories-report.json'),'utf8'));
+  assert.equal(interrupted.categories.length,2);
+  await gui.getByRole('button',{name:'前回の大問別一括取得を再開'}).click();
+  await gui.getByText(/前回の2分野を選択しました/).waitFor({timeout:10000});
+  assert.equal(await gui.locator('#items input:checked').count(),2);
+  await gui.getByRole('button',{name:'選択した問題を取得'}).click();
+  await gui.getByText('取得が完了しました。').waitFor({timeout:30000});
+  assert.equal(requests,4);
+  const report=JSON.parse(await readFile(path.join(dir,'bulk-categories-report.json'),'utf8'));
+  assert.equal(report.completed,2);
+  await gui.getByRole('button',{name:'前回の大問別一括取得を再開'}).click();
+  await gui.getByText(/前回の2分野を選択しました/).waitFor({timeout:10000});
+  await gui.getByRole('button',{name:'選択した問題を取得'}).click();
+  await gui.getByText('取得が完了しました。').waitFor({timeout:15000});
+  await gui.getByText(/スキップ 4件/).waitFor();assert.equal(requests,4);
+});
