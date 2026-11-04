@@ -1,0 +1,25 @@
+name: Node.js checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: |
+          node --check src/common.js
+          node --check src/store.js
+          node --check src/capture.js
+          node --check src/layout.js
+          node --check src/pdf-transform.js
+          node --check src/process.js
+      - run: npm test
