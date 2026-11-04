@@ -1,0 +1,9 @@
+node_modules/
+.local/
+*.pdf
+.env
+.env.*
+!.env.example
+.DS_Store
+playwright-report/
+test-results/

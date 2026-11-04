@@ -1,0 +1,18 @@
+{
+  "name": "get-toshin-pdf",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "capture": "node src/capture.js",
+    "process": "node src/process.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "playwright": "^1.55.0"
+  }
+}
