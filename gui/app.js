@@ -15,7 +15,7 @@ function setupRange(prefix,visible,selected,render){
     $(prefix+'-error').textContent='';selectRange(list,selected(),list[a-1].index,list[b-1].index);render();
   });
 }
-function visibleItems(){return current ? current.items.filter(x=>x.title.toLocaleLowerCase().includes(filter) && (!$('subject-filter').value || x.subject===$('subject-filter').value)) : [];}
+function visibleItems(){return current ? current.items.filter(x=>x.title.toLocaleLowerCase().includes(filter) && (!$('subject-filter').value || x.subject===$('subject-filter').value) && (current.mode!=='daimon' || !$('review-only').checked || (typeof x.scoreRate==='number' && x.scoreRate<80))) : [];}
 async function api(path,body) {
   const result=await fetch(path,{method:body?'POST':'GET',headers:{'x-app-token':token,...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});
   const data=await result.json(); if(!result.ok)throw Error(data.error||'操作できません'); return data;
@@ -23,7 +23,7 @@ async function api(path,body) {
 function render(s) {
   if(!current || current.dataDir!==s.dataDir) $('data-dir').value=s.dataDir;
   const changed=!current || current.revision!==s.revision || current.mode!==s.mode || JSON.stringify(current.items)!==JSON.stringify(s.items);
-  if(changed){selection=new Set(s.resumeIndices || []);itemAnchor=null;filter='';$('filter').value='';
+  if(changed){selection=new Set(s.resumeIndices || []);itemAnchor=null;filter='';$('filter').value='';$('review-only').checked=!!s.reviewOnly;$('force-download').checked=false;
     const subjects=[...new Set(s.items.map(x=>x.subject).filter(Boolean))];
     $('subject-filter').replaceChildren(new Option('すべての科目',''),...subjects.map(x=>new Option(x,x)));
   }
@@ -33,6 +33,8 @@ function render(s) {
   $('selection').hidden=!s.mode;$('results').hidden=!s.counts;
   $('category').textContent=s.mode==='daimon' ? `${s.category}（科目: ${s.subject||'要入力'}）` : s.mode==='categories' ? '科目や分野を選ぶと、含まれる全問題を1問ずつ取得します。' : '年度・科目を選択してください。';
   $('subject-filter-row').hidden=!['year','categories'].includes(s.mode);
+  $('review-options').hidden=!['daimon','categories'].includes(s.mode);
+  $('review-only').disabled=s.busy;$('force-download').disabled=s.busy;
   $('subject-row').hidden=s.mode!=='daimon'||!!s.subject;
   $('count').textContent=`${s.items.length}件`;$('path').textContent=s.outputDir;
   $('counts').textContent=s.counts ? `保存 ${s.counts.saved}件　スキップ ${s.counts.skipped}件　失敗 ${s.counts.failed}件　未処理 ${s.counts.remaining}${s.mode==='categories'?'分野':'件'}` : '';
@@ -42,7 +44,7 @@ function render(s) {
 function renderItems(){
   if(!current)return;
   const visible=visibleItems();
-  $('items').replaceChildren(...visible.map((item,position)=>{const label=document.createElement('label');label.className='item';const box=document.createElement('input');box.type='checkbox';box.checked=selection.has(item.index);box.disabled=current.busy;box.addEventListener('click',e=>{if(!(e.shiftKey && itemAnchor!==null && selectRange(visible,selection,itemAnchor,item.index,box.checked)))box.checked?selection.add(item.index):selection.delete(item.index);itemAnchor=item.index;renderItems();});const title=document.createElement('span');title.textContent=`${position+1}. ${item.title}`;label.append(box,title);return label;}));
+  $('items').replaceChildren(...visible.map((item,position)=>{const label=document.createElement('label');label.className='item';const box=document.createElement('input');box.type='checkbox';box.checked=selection.has(item.index);box.disabled=current.busy;box.addEventListener('click',e=>{if(!(e.shiftKey && itemAnchor!==null && selectRange(visible,selection,itemAnchor,item.index,box.checked)))box.checked?selection.add(item.index):selection.delete(item.index);itemAnchor=item.index;renderItems();});const title=document.createElement('span');title.textContent=`${position+1}. ${item.title}${current.mode==='daimon' ? '（最高得点率: '+(item.scoreRate===null?'未判定':item.scoreRate+'%')+'）' : ''}`;label.append(box,title);return label;}));
   $('all').checked=visible.length>0&&visible.every(x=>selection.has(x.index));$('all').indeterminate=visible.some(x=>selection.has(x.index))&&!$('all').checked;
   $('all').disabled=current.busy||!visible.length;$('filter').disabled=current.busy;$('subject-filter').disabled=current.busy;$('subject').disabled=current.busy;
   $('range-select').disabled=current.busy||!visible.length;
@@ -51,7 +53,8 @@ function renderItems(){
 setupRange('range',visibleItems,()=>selection,renderItems);
 $('filter').addEventListener('input',e=>{filter=e.target.value.trim().toLocaleLowerCase();itemAnchor=null;renderItems();});
 $('subject-filter').addEventListener('change',()=>{itemAnchor=null;renderItems();});
-$('all').addEventListener('change',e=>{for(const x of current.items.filter(x=>x.title.toLocaleLowerCase().includes(filter) && (!$('subject-filter').value || x.subject===$('subject-filter').value)))e.target.checked?selection.add(x.index):selection.delete(x.index);renderItems();});
+$('all').addEventListener('change',e=>{for(const x of visibleItems())e.target.checked?selection.add(x.index):selection.delete(x.index);renderItems();});
+$('review-only').addEventListener('change',()=>{itemAnchor=null;if(current?.mode==='daimon' && $('review-only').checked)for(const x of current.items)if(x.scoreRate===null || x.scoreRate>=80)selection.delete(x.index);renderItems();});
 async function action(path,body){try{await api(path,body);await refresh();}catch(e){$('status').textContent=e.message;}}
 async function chooseFolder(input,status){try{const data=await api('/api/choose-folder',{});$(input).value=data.path;}catch(e){$(status).textContent=e.message;}}
 $('choose-data-dir').addEventListener('click',()=>chooseFolder('data-dir','data-dir-status'));
@@ -63,7 +66,7 @@ $('daimon').addEventListener('click',()=>action('/api/discover',{mode:'daimon'})
 $('categories').addEventListener('click',()=>action('/api/discover',{mode:'categories'}));
 $('resume-bulk').addEventListener('click',()=>action('/api/discover',{mode:'categories',resume:true}));
 $('cancel').addEventListener('click',()=>action('/api/cancel',{}));
-$('start').addEventListener('click',()=>action('/api/start',{indices:[...selection].sort((a,b)=>a-b),subject:$('subject').value}));
+$('start').addEventListener('click',()=>action('/api/start',{indices:[...selection].sort((a,b)=>a-b),subject:$('subject').value,reviewOnly:$('review-only').checked,force:$('force-download').checked}));
 async function refresh(){try{render(await api('/api/status'));}catch{$('status').textContent='GUIとの接続が切れました。ターミナルから再起動してください。';}}
 void refresh();setInterval(refresh,1500);
 
