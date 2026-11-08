@@ -10,6 +10,7 @@ import { collectYear, listYears, openYearList, readYearState } from './year.js';
 import { copySaved, dateFolderFile, datePrefix, listFolder, listSaved, renameSaved } from './rename-files.js';
 import { openCategoryList, listCategories, enterCategory, returnToCategories } from './categories.js';
 import { retryTransient } from './retry.js';
+import { isReviewTarget } from './score-filter.js';
 
 const staticDir = fileURLToPath(new URL('../gui/', import.meta.url));
 const assets = {'/': ['index.html','text/html; charset=utf-8'], '/app.js':['app.js','text/javascript; charset=utf-8'], '/style.css':['style.css','text/css; charset=utf-8']};
@@ -30,7 +31,7 @@ export async function createGuiServer({context, dir, request}) {
   knownDirs=[...new Set([...knownDirs,path.resolve(dir)])];
   const token = randomBytes(32).toString('hex');
   const state = { mode:null, items:[], frame:null, page:null, subject:null, setId:null, category:null, busy:false,
-    cancelRequested:false, revision:0, resumeIndices:[], status:'POSにログインしてから、年度別または大問別の候補を読み込んでください。', progress:[], counts:null };
+    cancelRequested:false, reviewOnly:false, revision:0, resumeIndices:[], status:'POSにログインしてから、年度別または大問別の候補を読み込んでください。', progress:[], counts:null };
   let savedFiles=[], filesRoot=null;
   async function readSelectedFiles() {
     const tracked=await listSaved(dir);
@@ -41,9 +42,9 @@ export async function createGuiServer({context, dir, request}) {
     }
     return (await listFolder(filesRoot)).map(f=>({...f,owners:map.get(path.resolve(filesRoot,f.path))||[]}));
   }
-  const sendStatus = () => ({ mode:state.mode, items:state.items.map((x,i)=>({index:i, title:state.mode==='year' ? `${x.round} / ${x.subject}` : state.mode==='categories' ? `${x.subject.name} / ${x.title}` : `${x.number} - ${x.title}`, subject:state.mode==='year' ? x.subject : state.mode==='categories' ? x.subject.name : state.subject})),
-    subject:state.subject, category:state.category, revision:state.revision, resumeIndices:state.resumeIndices, busy:state.busy, status:state.status, progress:state.progress, counts:state.counts, dataDir:dir,outputDir:path.join(dir,'output') });
-  const reset = () => { state.revision++;state.resumeIndices=[];state.items=[];state.mode=null;state.frame=null;state.page=null;state.subject=null;state.counts=null;state.progress=[]; };
+  const sendStatus = () => ({ mode:state.mode, items:state.items.map((x,i)=>({index:i, title:state.mode==='year' ? `${x.round} / ${x.subject}` : state.mode==='categories' ? `${x.subject.name} / ${x.title}` : `${x.number} - ${x.title}`, subject:state.mode==='year' ? x.subject : state.mode==='categories' ? x.subject.name : state.subject, scoreRate:state.mode==='daimon' ? x.scoreRate : null})),
+    subject:state.subject, category:state.category, reviewOnly:state.reviewOnly, revision:state.revision, resumeIndices:state.resumeIndices, busy:state.busy, status:state.status, progress:state.progress, counts:state.counts, dataDir:dir,outputDir:path.join(dir,'output') });
+  const reset = () => { state.revision++;state.resumeIndices=[];state.items=[];state.mode=null;state.frame=null;state.page=null;state.subject=null;state.reviewOnly=false;state.counts=null;state.progress=[]; };
   async function discover(mode, resume=false) {
     reset(); state.busy=true; state.status='候補を読み込んでいます…';
     try {
@@ -84,6 +85,7 @@ export async function createGuiServer({context, dir, request}) {
           try {report=JSON.parse(await readFile(path.join(dir,'bulk-categories-report.json'),'utf8'));}
           catch(e) {if(e.code==='ENOENT')throw Error('再開できる履歴がありません');throw e;}
           if(report.mode!=='categories' || !Array.isArray(report.categories) || !report.categories.length)throw Error('再開できる履歴がありません');
+          state.reviewOnly=report.reviewOnly===true;
           state.resumeIndices=report.categories.map(saved=>{
             const matches=items.flatMap((item,i)=>item.subject.name===saved.subject && item.title===saved.title ? [i] : []);
             if(matches.length!==1)throw Error('前回の分野を確認できません');return matches[0];
@@ -97,7 +99,7 @@ export async function createGuiServer({context, dir, request}) {
   }
   async function saveBulkReport(mode, categories, completed) {
     const target=path.join(dir,`bulk-${mode}-report.json`), temp=target+'.tmp';
-    await writeFile(temp,JSON.stringify({mode,categories,completed,counts:state.counts,progress:state.progress,updatedAt:new Date().toISOString()},null,2)+'\n',{mode:0o600});
+    await writeFile(temp,JSON.stringify({mode,categories,completed,reviewOnly:state.reviewOnly,counts:state.counts,progress:state.progress,updatedAt:new Date().toISOString()},null,2)+'\n',{mode:0o600});
     await rename(temp,target);
   }
   function keepAwake() {
@@ -113,7 +115,7 @@ export async function createGuiServer({context, dir, request}) {
       onRetry:(status,attempt,delay)=>{state.status=`HTTP ${status}: ${Math.ceil(delay/1000)}秒待って再試行します（${attempt}/2）。`;}
     });
   }
-  async function processCategories(indices, awake) {
+  async function processCategories(indices, reviewOnly, force) {
     const selected=indices.map(i=>state.items[i]); let completed=0;
     const history=await readState(dir);
     await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed);
@@ -126,9 +128,14 @@ export async function createGuiServer({context, dir, request}) {
         if(!subject)throw Error('科目を判別できません');
         const items=await listQuestions(state.frame);
         if(!items.length || items.some(x=>!x.id || !x.title || !/^\d+$/.test(x.number)))throw Error('問題一覧を確認できません');
-        for(const item of items) {
+        const eligible=reviewOnly ? items.filter(isReviewTarget) : items;
+        if(reviewOnly){
+          state.progress.push(`赤・黄色以外を除外: ${items.length-eligible.length}件（${category.title}）`);
+          if(state.progress.length>200)state.progress.shift();
+        }
+        for(const item of eligible) {
           if(state.cancelRequested)break;
-          const result=await withRetries(()=>collectOne({page:state.page,frame:state.frame,item:{...item,category:category.title},setId:category.setId,subject,dir,state:history,...(request ? {request} : {})}));
+          const result=await withRetries(()=>collectOne({page:state.page,frame:state.frame,item:{...item,category:category.title},setId:category.setId,subject,dir,state:history,force,...(request ? {request} : {})}));
           state.counts[result]++;
           state.progress.push(`${result==='saved'?'保存':'スキップ'}: ${item.title}`);
           if(state.progress.length>200)state.progress.shift();
@@ -151,12 +158,12 @@ export async function createGuiServer({context, dir, request}) {
     }
     await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed).catch(()=>{});
   }
-  async function processItems(indices, subject) {
-    state.cancelRequested=false;state.busy=true;state.progress=[]; state.counts={saved:0,skipped:0,failed:0,remaining:indices.length};
+  async function processItems(indices, subject, {reviewOnly=false,force=false}={}) {
+    state.reviewOnly=reviewOnly;state.cancelRequested=false;state.busy=true;state.progress=[]; state.counts={saved:0,skipped:0,failed:0,remaining:indices.length};
     state.status='取得中です。POSの操作を終えるまでこの画面を開いたままにしてください。';
     let initial = []; const awake=keepAwake();
     try {
-      if(state.mode==='categories') {await processCategories(indices,awake);return;}
+      if(state.mode==='categories') {await processCategories(indices,reviewOnly,force);return;}
       if(state.mode==='daimon') initial=await listQuestions(state.frame);
       const savedState=state.mode==='year' ? await readYearState(dir) : await readState(dir);
       const yearSelections=state.mode==='year' ? indices.map(i=>({round:state.items[i].round,subject:state.items[i].subject})) : null;
@@ -165,8 +172,8 @@ export async function createGuiServer({context, dir, request}) {
         if(state.cancelRequested)break;
         const item=state.items[index];
         try {
-          const result=await withRetries(()=>state.mode==='year' ? collectYear({page:state.page,frame:state.frame,item,dir,state:savedState,...(request ? {request} : {})}) :
-            collectOne({page:state.page,frame:state.frame,item,setId:state.setId,subject,dir,state:savedState,...(request ? {request} : {})}));
+          const result=await withRetries(()=>state.mode==='year' ? collectYear({page:state.page,frame:state.frame,item,dir,state:savedState,force,...(request ? {request} : {})}) :
+            collectOne({page:state.page,frame:state.frame,item,setId:state.setId,subject,dir,state:savedState,force,...(request ? {request} : {})}));
           state.counts[result]++; state.counts.remaining--;
           state.progress.push(`${result==='saved'?'保存':'スキップ'}: ${state.mode==='year'?`${item.round} / ${item.subject}`:item.title}`);
           if(yearSelections)await saveBulkReport('year',yearSelections,state.counts.saved+state.counts.skipped);
@@ -256,7 +263,10 @@ export async function createGuiServer({context, dir, request}) {
           body.indices.some(i=>!Number.isInteger(i)||i<0||i>=state.items.length) || new Set(body.indices).size!==body.indices.length) return response(res,400,{error:'対象を選択してください'});
         const subject=state.subject || (typeof body.subject==='string' ? body.subject.trim().slice(0,80) : '');
         if(state.mode==='daimon' && !subject) return response(res,400,{error:'科目名を入力してください'});
-        void processItems(body.indices,subject);return response(res,202,{});
+        const reviewOnly=body.reviewOnly===true && ['daimon','categories'].includes(state.mode);
+        const indices=reviewOnly && state.mode==='daimon' ? body.indices.filter(i=>isReviewTarget(state.items[i])) : body.indices;
+        if(!indices.length)return response(res,400,{error:'赤・黄色の対象問題がありません'});
+        void processItems(indices,subject,{reviewOnly,force:body.force===true});return response(res,202,{});
       }
       return response(res,404,{error:'見つかりません'});
     } catch {return response(res,400,{error:'入力を確認してください'});}

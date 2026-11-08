@@ -52,4 +52,15 @@ test('collects each selected question separately and resumes without fetching', 
   const invalid = { get: async () => ({ok:()=>true,body:async()=>Buffer.from('<html>login</html>')}) };
   await assert.rejects(collectOne({page,frame:page.mainFrame(),item:items[0],setId:'set',subject:'国語',dir,state,request:invalid}), /PDFではありません/);
   assert.equal(await collectOne({page,frame:page.mainFrame(),item:items[0],setId:'set',subject:'国語',dir,state,request}),'saved');
+  assert.equal(requests,3);
+  assert.equal(await collectOne({page,frame:page.mainFrame(),item:items[0],setId:'set',subject:'国語',dir,state,request,force:true}),'saved');
+  assert.equal(requests,4);
+});
+
+test('listQuestions picks highest-rate cells rather than the 80% passing average',async t=>{
+  const browser=await chromium.launch({headless:true});t.after(()=>browser.close());
+  const page=await browser.newPage();
+  const scores=['34%','76%','86%','-%'];
+  await page.setContent('<ul>'+scores.map((score,i)=>`<li class="questions-item"><h4><span class="flag"><small>${i+1}</small></span><span class="questions-item-title">問題${i+1}</span></h4><label class="checkbox"><input class="chkDaimon" value="${i+1}" type="checkbox"></label><div>${score}<br>最高得点率</div><div>80%<br>合格者平均</div></li>`).join('')+'</ul>');
+  assert.deepEqual((await listQuestions(page.mainFrame())).map(x=>x.scoreRate),[34,76,86,null]);
 });

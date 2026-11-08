@@ -9,6 +9,7 @@ import { stdin, stdout } from 'node:process';
 import { isJapaneseSubject, isPdfBytes, isPdfDownloadUrl, isPrintPage, parseOptions } from './common.js';
 import { transformPdf } from './pdf-transform.js';
 import { parseSelection } from './selection.js';
+import { isReviewTarget, parseHighestScoreRate } from './score-filter.js';
 
 // Preserve the visible Japanese title, including full-width spaces.
 export function filenamePart(value) {
@@ -49,18 +50,19 @@ async function saveState(dir, state) {
 
 // The element association is based on the observed question list, not ID construction.
 export async function listQuestions(frame) {
-  return frame.locator('li.questions-item').evaluateAll(rows => rows.map((row, i) => {
+  const questions=await frame.locator('li.questions-item').evaluateAll(rows => rows.map((row, i) => {
     const input = row.querySelector('input.chkDaimon');
     const title = row.querySelector('.questions-item-title')?.textContent?.trim();
     const number = row.querySelector('h4 .flag small')?.textContent?.trim();
-    return { index: i + 1, number, title, id: input?.value, checked: !!input?.checked };
+    return { index: i + 1, number, title, id: input?.value, checked: !!input?.checked, scoreText: row.innerText };
   }));
+  return questions.map(({scoreText,...question})=>({...question,scoreRate:parseHighestScoreRate(scoreText)}));
 }
 
-export async function collectOne({ page, frame, item, setId, subject, dir, state, request = page.context().request }) {
+export async function collectOne({ page, frame, item, setId, subject, dir, state, force = false, request = page.context().request }) {
   const key = questionKey(setId, item.id);
   const prior = state.items.find(r => r.key === key);
-  if (prior && await exists(path.join(dir, prior.path))) return 'skipped';
+  if (prior && !force && await exists(path.join(dir, prior.path))) return 'skipped';
   const rows = frame.locator('li.questions-item');
   const boxes = frame.locator('input.chkDaimon');
   // Always isolate exactly one question and verify before opening the print popup.
@@ -93,6 +95,7 @@ export async function collectOne({ page, frame, item, setId, subject, dir, state
     if (prior) file = path.join(dir, prior.path);
     else if (await exists(file)) file = file.replace(/\.pdf$/, `_${key.slice(0, 10)}.pdf`);
     if (!prior && await exists(file)) throw new Error('保存先の名前が衝突しています');
+    await mkdir(path.dirname(file), { recursive: true });
     const temp = `${file}.${randomBytes(8).toString('hex')}.tmp`;
     await writeFile(temp, transformed, { mode: 0o600, flag: 'wx' });
     await rename(temp, file);
@@ -135,19 +138,21 @@ export async function run() {
       if (!setId || !items.length || items.some(q => !q.id || !q.title || !/^\d+$/.test(q.number))) {
         console.log('一覧の構造を確認できません。処理を中止しました。'); continue;
       }
-      items.forEach((item, i) => console.log(`${i + 1}: ${item.title}`));
+      items.forEach((item, i) => console.log(`${i + 1}: ${item.title}（最高得点率: ${item.scoreRate===null?'未判定':item.scoreRate+'%'}）`));
       const choices = (await input.question('番号・範囲（例: 1,3-8）、全件 a、戻る q > ')).trim();
       if (choices.toLowerCase() === 'q') continue;
       let selected;
       try { selected = parseSelection(choices, items.length).map(i => ({ ...items[i], category })); }
       catch (e) { console.log(e.message); continue; }
+      if(options.reviewOnly)selected=selected.filter(isReviewTarget);
+      if(!selected.length){console.log('赤・黄色の対象問題がありません。');continue;}
       console.log(`${selected.length} 問を処理します。`);
       let saved = 0, skipped = 0, failed = 0, attempted = 0;
       try {
         for (const item of selected) {
           attempted++;
           try {
-            const result = await collectOne({ page, frame, item, setId, subject, dir, state });
+            const result = await collectOne({ page, frame, item, setId, subject, dir, state, force:options.force });
             if (result === 'saved') saved++; else skipped++;
             console.log(`${result === 'saved' ? '保存' : 'スキップ'}: ${questionFilename(item.number, item.title)}`);
           } catch (e) {

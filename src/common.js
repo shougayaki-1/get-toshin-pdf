@@ -7,6 +7,7 @@ export function parseOptions(argv, { requireSubject = false } = {}) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--force') { raw.force = true; continue; }
+    if (arg === '--review-only') { raw.reviewOnly = true; continue; }
     if (!['--subject', '--year', '--round', '--data-dir'].includes(arg)) {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -22,7 +23,8 @@ export function parseOptions(argv, { requireSubject = false } = {}) {
     year: raw.year || '年度不明',
     round: raw.round || '回次不明',
     dataDir: path.resolve(raw['data-dir'] || '.local'),
-    force: Boolean(raw.force)
+    force: Boolean(raw.force),
+    reviewOnly: Boolean(raw.reviewOnly)
   };
 }
 
