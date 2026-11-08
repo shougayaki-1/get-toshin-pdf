@@ -44,10 +44,10 @@ async function saveYearState(dir, state) {
   await writeFile(temp, JSON.stringify(state, null, 2)+'\n', {mode:0o600, flag:'wx'});
   await rename(temp, path.join(dir, 'year-manifest.json'));
 }
-export async function collectYear({ page, frame, item, dir, state, request = page.context().request }) {
+export async function collectYear({ page, frame, item, dir, state, force = false, request = page.context().request }) {
   const key = yearKey(item);
   const prior = state.items.find(x => x.key === key);
-  if (prior && await exists(path.join(dir, prior.path))) return 'skipped';
+  if (prior && !force && await exists(path.join(dir, prior.path))) return 'skipped';
   const row = frame.locator('table.nendobetsu-ichiran tr').filter({has:frame.locator('td.kaisu-name', {hasText:item.round})});
   if (await row.count() !== 1) throw Error('年度行が特定できません');
   const cell = row.locator('td.enshu-info').nth(item.column);
@@ -75,6 +75,7 @@ export async function collectYear({ page, frame, item, dir, state, request = pag
       let file = prior ? path.join(dir, prior.path) : path.join(folder, yearFilename(item));
       if (!prior && await exists(file)) file = file.replace(/\.pdf$/, `_${key.slice(0,10)}.pdf`);
       if (!prior && await exists(file)) throw Error('保存先の名前が衝突しています');
+      await mkdir(path.dirname(file),{recursive:true});
       const temp = `${file}.${randomBytes(8).toString('hex')}.tmp`;
       await writeFile(temp, output, {mode:0o600,flag:'wx'}); await rename(temp,file);
       const record = {key, round:item.round, subject:item.subject, path:path.relative(dir,file), savedAt:new Date().toISOString()};
@@ -151,7 +152,7 @@ export async function runYear() {
     for (const item of selected) {
       attempted++;
       try {
-        const result = await collectYear({page,frame,item,dir:options.dataDir,state});
+        const result = await collectYear({page,frame,item,dir:options.dataDir,state,force:options.force});
         if (result === 'saved') saved++; else skipped++;
         console.log(`${result === 'saved' ? '保存' : 'スキップ'}: ${yearFilename(item)}`);
       } catch (e) {
