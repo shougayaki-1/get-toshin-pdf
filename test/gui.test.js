@@ -28,7 +28,7 @@ test('GUI loads and shows a useful login prompt when POS is unavailable', async 
   const browser=await chromium.launch({headless:true}); t.after(()=>browser.close());
   const page=await browser.newPage({viewport:{width:1100,height:850}});
   await page.goto(url);
-  await page.getByRole('button',{name:'年度別を読み込む'}).click();
+  await page.getByRole('button',{name:'候補を読み込む'}).click();
   await page.getByRole('status').getByText(/ログイン/).waitFor();
   await page.reload();
   await page.getByRole('status').getByText(/ログイン/).waitFor();
@@ -49,7 +49,7 @@ test('GUI discovers category and downloads two questions without manual subject'
   });
   const pos=await context.newPage();await pos.goto('https://pos.toshin.com/SSO1/SSOMenu/PosApplication.aspx');
   const {server,url}=await createGuiServer({context,dir,request});t.after(()=>new Promise(resolve=>server.close(resolve)));
-  const gui=await context.newPage();await gui.goto(url);await gui.getByRole('button',{name:'大問別の問題を読み込む'}).click();
+  const gui=await context.newPage();await gui.goto(url);await gui.locator('#exercise-type').selectOption('daimon');await gui.locator('#exercise-scope').selectOption('current');await gui.getByRole('button',{name:'候補を読み込む'}).click();
   await gui.getByText('2件の候補を読み込みました。').waitFor();
   await gui.locator('#range-start').fill('1');await gui.locator('#range-end').fill('2');await gui.locator('#range-select').click();
   assert.equal(await gui.locator('#items input:checked').count(),2);
@@ -75,11 +75,11 @@ test('GUI discovers and collects a year entry', async t => {
   const pos=await context.newPage();await pos.goto('https://pos.toshin.com/SSO1/SSOMenu/PosApplication.aspx');
   const {server,url}=await createGuiServer({context,dir,request});t.after(()=>new Promise(resolve=>server.close(resolve)));
   const gui=await context.newPage();await gui.goto(url);await gui.locator('#data-dir').fill(destination);await gui.locator('#set-data-dir').click();
-  await gui.locator('#data-dir-status').getByText(/destination\/output/).waitFor();await gui.getByRole('button',{name:'年度別を読み込む'}).click();
+  await gui.locator('#data-dir-status').getByText(/destination\/output/).waitFor();await gui.getByRole('button',{name:'候補を読み込む'}).click();
   await gui.getByText('1件の候補を読み込みました。').waitFor();await gui.getByLabel('表示中をすべて選択').check();
   await gui.getByRole('button',{name:'選択した問題を取得'}).click();await gui.getByText('取得が完了しました。').waitFor({timeout:15000});await gui.getByText(/保存 1件/).waitFor();
   assert.equal((await readdir(path.join(destination,'output','年度別','国語'))).length,1);
-  await gui.getByRole('button',{name:'前回の年度別取得を再開'}).click();
+  if(!await gui.locator('#resume').isVisible())await gui.locator('#resume-options summary').click();await gui.locator('#resume').click();
   await gui.getByText(/前回の1件を選択しました/).waitFor({timeout:10000});
   assert.equal(await gui.locator('#items input:checked').count(),1);
   await gui.getByRole('button',{name:'選択した問題を取得'}).click();

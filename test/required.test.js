@@ -26,7 +26,7 @@ test('discovers both required types and downloads selected categories', async t=
   const pos=await context.newPage();await pos.goto('https://pos.toshin.com/SSO1/SSOMenu/PosApplication.aspx');
   const {server,url}=await createGuiServer({context,dir,request});t.after(()=>new Promise(resolve=>server.close(resolve)));
   const gui=await context.newPage();await gui.goto(url);
-  await gui.getByRole('button',{name:'正解必須問題の全分野を読み込む'}).click();
+  await gui.locator('#exercise-type').selectOption('required');await gui.locator('#exercise-scope').selectOption('all');await gui.getByRole('button',{name:'候補を読み込む'}).click();
   await gui.getByText('2件の候補を読み込みました。').waitFor({timeout:10000});
   assert.match(await gui.locator('#items').innerText(),/模試正解必須問題/);
   assert.match(await gui.locator('#items').innerText(),/過去問正解必須問題/);

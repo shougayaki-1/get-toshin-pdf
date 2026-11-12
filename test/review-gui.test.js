@@ -32,7 +32,7 @@ test('GUI reviews only red/yellow questions and re-downloads deleted or forced P
   const {server,url}=await createGuiServer({context,dir,request});
   t.after(()=>new Promise(resolve=>server.close(resolve)));
   const gui=await context.newPage();await gui.goto(url);
-  await gui.getByRole('button',{name:'大問別の問題を読み込む'}).click();
+  await gui.locator('#exercise-type').selectOption('daimon');await gui.locator('#exercise-scope').selectOption('current');await gui.getByRole('button',{name:'候補を読み込む'}).click();
   await gui.getByText('4件の候補を読み込みました。').waitFor();
   await gui.locator('#review-only').check();
   assert.equal(await gui.locator('#items .item').count(),2);

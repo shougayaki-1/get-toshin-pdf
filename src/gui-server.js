@@ -43,7 +43,7 @@ export async function createGuiServer({context, dir, request}) {
     }
     return (await listFolder(filesRoot)).map(f=>({...f,owners:map.get(path.resolve(filesRoot,f.path))||[]}));
   }
-  const sendStatus = () => ({ mode:state.mode, items:state.items.map((x,i)=>({index:i, title:state.mode==='year' ? `${x.round} / ${x.subject}` : ['categories','required'].includes(state.mode) ? `${x.typeName ? x.typeName + ' / ' : ''}${x.subject.name} / ${x.title}` : `${x.number} - ${x.title}`, subject:state.mode==='year' ? x.subject : ['categories','required'].includes(state.mode) ? x.subject.name : state.subject, scoreRate:state.mode==='daimon' ? x.scoreRate : null})),
+  const sendStatus = () => ({ mode:state.mode, items:state.items.map((x,i)=>({index:i, title:state.mode==='year' ? `${x.round} / ${x.subject}` : ['categories','required'].includes(state.mode) ? `${x.typeName ? x.typeName + ' / ' : ''}${x.subject.name} / ${x.title}` : `${x.number} - ${x.title}`, subject:state.mode==='year' ? x.subject : ['categories','required'].includes(state.mode) ? x.subject.name : state.mode==='category-questions' ? x.categoryInfo.subject.name : state.subject, scoreRate:['daimon','required-items','category-questions'].includes(state.mode) ? x.scoreRate : null, practiceCount:x.practiceCount ?? null, category:state.mode==='category-questions' ? x.categoryInfo.title : null})),
     subject:state.subject, category:state.category, reviewOnly:state.reviewOnly, revision:state.revision, resumeIndices:state.resumeIndices, busy:state.busy, status:state.status, progress:state.progress, counts:state.counts, dataDir:dir,outputDir:path.join(dir,'output') });
   const reset = () => { state.revision++;state.resumeIndices=[];state.items=[];state.mode=null;state.frame=null;state.page=null;state.subject=null;state.reviewOnly=false;state.counts=null;state.progress=[]; };
   async function discover(mode, resume=false) {
@@ -102,6 +102,59 @@ export async function createGuiServer({context, dir, request}) {
     } catch(e) { reset();state.status=e.message && /^(専用ブラウザ|POSで|大問別|正解必須|問題一覧|年度別の候補|再開できる|前回の分野|前回の年度)/.test(e.message) ? e.message : '候補を読み込めません。ログイン状態と画面を確認してください。'; }
     finally {state.busy=false;}
   }
+  async function loadCategoryQuestions(indices) {
+    const mode=state.mode, categories=indices.map(i=>state.items[i]), items=[];
+    state.busy=true;state.cancelRequested=false;state.counts=null;state.progress=[];
+    try {
+      for(const category of categories) {
+        if(state.cancelRequested)break;
+        state.status=`問題一覧を読み込み中: ${category.title}`;
+        if(mode==='required')await enterRequiredCategory(state.frame,category);else await enterCategory(state.frame,category);
+        const questions=await listQuestions(state.frame);
+        if(!questions.length || questions.some(q=>!q.id || !q.title || !/^\d+$/.test(q.number)))throw Error('問題一覧を確認できません');
+        for(const question of questions)items.push({...question,categoryInfo:category});
+        if(mode==='required')await returnToRequired(state.frame);else await returnToCategories(state.frame);
+      }
+      if(state.cancelRequested) {state.status='問題一覧の読み込みを中止しました。';return;}
+      state.parentMode=mode;state.mode='category-questions';state.items=items;state.subject=null;state.revision++;
+      state.status=`${categories.length}分野、${items.length}問を読み込みました。`;
+    } catch {state.status='問題一覧を読み込めません。POS画面を確認して、もう一度分野を読み込んでください。';}
+    finally {state.busy=false;}
+  }
+  function matchesOptions(item, maxScore, includeUnpracticed) {
+    if(item.practiceCount===0)return includeUnpracticed;
+    if(maxScore===null)return true;
+    return typeof item.scoreRate==='number' && item.scoreRate<maxScore;
+  }
+  async function processSelectedQuestions(indices, options) {
+    const history=await readState(dir), groups=new Map();
+    for(const index of indices) {
+      const item=state.items[index], key=JSON.stringify([item.categoryInfo.type || '',item.categoryInfo.setId]);
+      if(!groups.has(key))groups.set(key,{category:item.categoryInfo,items:[]});
+      groups.get(key).items.push(item);
+    }
+    for(const {category,items} of groups.values()) {
+      if(state.cancelRequested)break;
+      state.status=`取得中: ${category.title}`;
+      try {
+        if(state.parentMode==='required')await enterRequiredCategory(state.frame,category);else await enterCategory(state.frame,category);
+        const current=await listQuestions(state.frame);
+        for(const item of items) {
+          if(state.cancelRequested)break;
+          const fresh=current[item.index-1];
+          if(!fresh || fresh.id!==item.id || fresh.title!==item.title)throw Error('問題一覧が変更されました');
+          if(!matchesOptions(fresh,options.maxScore,options.includeUnpracticed)) {state.counts.remaining--;continue;}
+          const subject=inferSubject(category.title)||category.subject.name;
+          const categoryName=category.typeName ? `正解必須問題 ${category.typeName} ${category.title}` : category.title;
+          const result=await withRetries(()=>collectOne({page:state.page,frame:state.frame,item:{...fresh,category:categoryName},setId:category.setId,subject,dir,state:history,force:options.force,footer:options.footer,onSaved:file=>recentFiles.push(file),...(request ? {request} : {})}));
+          state.counts[result]++;state.counts.remaining--;state.progress.push(`${result==='saved'?'保存':'スキップ'}: ${item.title}`);
+          if(state.progress.length>200)state.progress.shift();
+          if(result==='saved')await new Promise(resolve=>setTimeout(resolve,2000));
+        }
+        if(state.parentMode==='required')await returnToRequired(state.frame);else await returnToCategories(state.frame);
+      } catch(e) {if(!state.cancelRequested){state.counts.failed++;state.progress.push(`失敗: ${category.title}。処理を中断しました。`);}break;}
+    }
+  }
   async function saveBulkReport(mode, categories, completed) {
     const target=path.join(dir,`bulk-${mode}-report.json`), temp=target+'.tmp';
     await writeFile(temp,JSON.stringify({mode,categories,completed,reviewOnly:state.reviewOnly,counts:state.counts,progress:state.progress,updatedAt:new Date().toISOString()},null,2)+'\n',{mode:0o600});
@@ -120,7 +173,7 @@ export async function createGuiServer({context, dir, request}) {
       onRetry:(status,attempt,delay)=>{state.status=`HTTP ${status}: ${Math.ceil(delay/1000)}秒待って再試行します（${attempt}/2）。`;}
     });
   }
-  async function processCategories(indices, reviewOnly, force, footer) {
+  async function processCategories(indices, reviewOnly, force, footer, maxScore, includeUnpracticed) {
     const selected=indices.map(i=>state.items[i]); let completed=0;
     const history=await readState(dir);
     if(state.mode==='categories')await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed);
@@ -133,7 +186,7 @@ export async function createGuiServer({context, dir, request}) {
         if(!subject)throw Error('科目を判別できません');
         const items=await listQuestions(state.frame);
         if(!items.length || items.some(x=>!x.id || !x.title || !/^\d+$/.test(x.number)))throw Error('問題一覧を確認できません');
-        const eligible=reviewOnly ? items.filter(isReviewTarget) : items;
+        const eligible=items.filter(q=>(!reviewOnly || isReviewTarget(q)) && matchesOptions(q,maxScore,includeUnpracticed));
         if(reviewOnly){
           state.progress.push(`赤・黄色以外を除外: ${items.length-eligible.length}件（${category.title}）`);
           if(state.progress.length>200)state.progress.shift();
@@ -163,12 +216,13 @@ export async function createGuiServer({context, dir, request}) {
     }
     if(state.mode==='categories')await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed).catch(()=>{});
   }
-  async function processItems(indices, subject, {reviewOnly=false,force=false,footer=false}={}) {
+  async function processItems(indices, subject, {reviewOnly=false,force=false,footer=false,maxScore=null,includeUnpracticed=true}={}) {
     recentFiles=[];state.reviewOnly=reviewOnly;state.cancelRequested=false;state.busy=true;state.progress=[]; state.counts={saved:0,skipped:0,failed:0,remaining:indices.length};
     state.status='取得中です。POSの操作を終えるまでこの画面を開いたままにしてください。';
     let initial = []; const awake=keepAwake();
     try {
-      if(['categories','required'].includes(state.mode)) {await processCategories(indices,reviewOnly,force,footer);return;}
+      if(['categories','required'].includes(state.mode)) {await processCategories(indices,reviewOnly,force,footer,maxScore,includeUnpracticed);return;}
+      if(state.mode==='category-questions') {await processSelectedQuestions(indices,{force,footer,maxScore,includeUnpracticed});return;}
       if(['daimon','required-items'].includes(state.mode)) initial=await listQuestions(state.frame);
       const savedState=state.mode==='year' ? await readYearState(dir) : await readState(dir);
       const yearSelections=state.mode==='year' ? indices.map(i=>({round:state.items[i].round,subject:state.items[i].subject})) : null;
@@ -248,6 +302,10 @@ export async function createGuiServer({context, dir, request}) {
         catch {filesRoot=null;return response(res,500,{error:'フォルダを読み込めません'});}
       }
       if(u.pathname==='/api/discover' && ['year','daimon','categories','required','required-items'].includes(body.mode)) {void discover(body.mode,body.resume===true && ['year','categories'].includes(body.mode));return response(res,202,{});}
+      if(u.pathname==='/api/load-questions') {
+        if(!['categories','required'].includes(state.mode) || !Array.isArray(body.indices) || !body.indices.length || body.indices.some(i=>!Number.isInteger(i)||i<0||i>=state.items.length) || new Set(body.indices).size!==body.indices.length)return response(res,400,{error:'分野を選択してください'});
+        void loadCategoryQuestions(body.indices);return response(res,202,{});
+      }
       if(u.pathname==='/api/rename') {
         try {datePrefix(body.date);} catch {return response(res,400,{error:'有効な日付を選択してください'});}
         const mode=body.mode ?? 'rename';
@@ -273,10 +331,13 @@ export async function createGuiServer({context, dir, request}) {
           body.indices.some(i=>!Number.isInteger(i)||i<0||i>=state.items.length) || new Set(body.indices).size!==body.indices.length) return response(res,400,{error:'対象を選択してください'});
         const subject=state.subject || (typeof body.subject==='string' ? body.subject.trim().slice(0,80) : '');
         if(state.mode==='daimon' && !subject) return response(res,400,{error:'科目名を入力してください'});
+        const maxScore=body.maxScore===null || body.maxScore===undefined ? null : Number(body.maxScore);
+        if(maxScore!==null && (!Number.isFinite(maxScore) || maxScore<0 || maxScore>101))return response(res,400,{error:'得点率を0〜101で指定してください'});
+        const includeUnpracticed=body.includeUnpracticed!==false;
         const reviewOnly=body.reviewOnly===true && ['daimon','categories'].includes(state.mode);
-        const indices=reviewOnly && state.mode==='daimon' ? body.indices.filter(i=>isReviewTarget(state.items[i])) : body.indices;
-        if(!indices.length)return response(res,400,{error:'赤・黄色の対象問題がありません'});
-        void processItems(indices,subject,{reviewOnly,force:body.force===true,footer:body.footer===true});return response(res,202,{});
+        const indices=['daimon','required-items','category-questions'].includes(state.mode) ? body.indices.filter(i=>(!reviewOnly || isReviewTarget(state.items[i])) && matchesOptions(state.items[i],maxScore,includeUnpracticed)) : body.indices;
+        if(!indices.length)return response(res,400,{error:'条件に合う問題がありません'});
+        void processItems(indices,subject,{reviewOnly,force:body.force===true,footer:body.footer===true,maxScore,includeUnpracticed});return response(res,202,{});
       }
       return response(res,404,{error:'見つかりません'});
     } catch {return response(res,400,{error:'入力を確認してください'});}

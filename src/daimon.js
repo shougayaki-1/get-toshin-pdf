@@ -54,7 +54,9 @@ export async function listQuestions(frame) {
     const input = row.querySelector('input.chkDaimon');
     const title = row.querySelector('.questions-item-title')?.textContent?.trim();
     const number = row.querySelector('h4 .flag small')?.textContent?.trim();
-    return { index: i + 1, number, title, id: input?.value, checked: !!input?.checked, scoreText: row.innerText };
+    const countText = [...row.querySelectorAll('dl')].find(dl => dl.querySelector('dt')?.textContent?.trim() === '演習回数')?.querySelector('dd')?.textContent?.trim();
+    const practiceCount = countText === '-' || countText === '－' ? 0 : /^\d+$/.test(countText ?? '') ? Number(countText) : null;
+    return { index: i + 1, number, title, id: input?.value, checked: !!input?.checked, scoreText: row.innerText, practiceCount };
   }));
   return questions.map(({scoreText,...question})=>({...question,scoreRate:parseHighestScoreRate(scoreText)}));
 }

@@ -27,7 +27,7 @@ test('collects all selected categories across subjects and offers resume', async
   const pos=await context.newPage();await pos.goto('https://pos.toshin.com/SSO1/SSOMenu/PosApplication.aspx');
   const {server,url}=await createGuiServer({context,dir,request});t.after(()=>new Promise(resolve=>server.close(resolve)));
   const gui=await context.newPage();await gui.goto(url);
-  await gui.getByRole('button',{name:'大問別の全分野を読み込む'}).click();
+  await gui.locator('#exercise-type').selectOption('daimon');await gui.locator('#exercise-scope').selectOption('all');await gui.getByRole('button',{name:'候補を読み込む'}).click();
   await gui.getByText('2件の候補を読み込みました。').waitFor({timeout:10000});
   await gui.locator('#subject-filter').selectOption({label:'国語'});
   assert.equal(await gui.locator('#items .item').count(),1);
@@ -39,7 +39,7 @@ test('collects all selected categories across subjects and offers resume', async
   assert.ok(requests<4);
   const interrupted=JSON.parse(await readFile(path.join(dir,'bulk-categories-report.json'),'utf8'));
   assert.equal(interrupted.categories.length,2);
-  await gui.getByRole('button',{name:'前回の大問別一括取得を再開'}).click();
+  if(!await gui.locator('#resume').isVisible())await gui.locator('#resume-options summary').click();await gui.locator('#resume').click();
   await gui.getByText(/前回の2分野を選択しました/).waitFor({timeout:10000});
   assert.equal(await gui.locator('#items input:checked').count(),2);
   await gui.getByRole('button',{name:'選択した問題を取得'}).click();
@@ -47,7 +47,7 @@ test('collects all selected categories across subjects and offers resume', async
   assert.equal(requests,4);
   const report=JSON.parse(await readFile(path.join(dir,'bulk-categories-report.json'),'utf8'));
   assert.equal(report.completed,2);
-  await gui.getByRole('button',{name:'前回の大問別一括取得を再開'}).click();
+  if(!await gui.locator('#resume').isVisible())await gui.locator('#resume-options summary').click();await gui.locator('#resume').click();
   await gui.getByText(/前回の2分野を選択しました/).waitFor({timeout:10000});
   await gui.getByRole('button',{name:'選択した問題を取得'}).click();
   await gui.getByText('取得が完了しました。').waitFor({timeout:15000});

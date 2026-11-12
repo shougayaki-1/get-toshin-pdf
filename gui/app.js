@@ -15,7 +15,7 @@ function setupRange(prefix,visible,selected,render){
     $(prefix+'-error').textContent='';selectRange(list,selected(),list[a-1].index,list[b-1].index);render();
   });
 }
-function visibleItems(){return current ? current.items.filter(x=>x.title.toLocaleLowerCase().includes(filter) && (!$('subject-filter').value || x.subject===$('subject-filter').value) && (current.mode!=='daimon' || !$('review-only').checked || (typeof x.scoreRate==='number' && x.scoreRate<80))) : [];}
+function visibleItems(){return current ? current.items.filter(x=>`${x.title} ${x.category||''}`.toLocaleLowerCase().includes(filter) && (!$('subject-filter').value || x.subject===$('subject-filter').value) && (current.mode!=='daimon' || !$('review-only').checked || (typeof x.scoreRate==='number' && x.scoreRate<80))) : [];}
 async function api(path,body) {
   const result=await fetch(path,{method:body?'POST':'GET',headers:{'x-app-token':token,...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});
   const data=await result.json(); if(!result.ok)throw Error(data.error||'操作できません'); return data;
@@ -27,13 +27,17 @@ function render(s) {
     const subjects=[...new Set(s.items.map(x=>x.subject).filter(Boolean))];
     $('subject-filter').replaceChildren(new Option('すべての科目',''),...subjects.map(x=>new Option(x,x)));
   }
-  current=s;$('status').textContent=s.status;$('year').disabled=s.busy;$('resume-year').disabled=s.busy;$('daimon').disabled=s.busy;$('categories').disabled=s.busy;$('resume-bulk').disabled=s.busy;$('required').disabled=s.busy;$('required-items').disabled=s.busy;$('cancel').hidden=!s.busy||!s.counts;
+  current=s;$('status').textContent=s.status;for(const id of ['exercise-type','exercise-scope','discover','resume'])$(id).disabled=s.busy;$('cancel').hidden=!s.busy||!s.counts;
   $('open-output').disabled=s.busy;$('load-recent').disabled=s.busy;$('set-data-dir').disabled=s.busy;$('choose-data-dir').disabled=s.busy;$('load-folder').disabled=s.busy;$('choose-files-dir').disabled=s.busy;$('load-files').disabled=s.busy;
   $('data-dir-status').textContent=`PDFの保存先: ${s.outputDir}`;
   $('selection').hidden=!s.mode;$('results').hidden=!s.counts;
-  $('category').textContent=s.mode==='daimon' ? `${s.category}（科目: ${s.subject||'要入力'}）` : ['categories','required'].includes(s.mode) ? '科目や分野を選ぶと、含まれる全問題を1問ずつ取得します。' : s.mode==='required-items' ? `${s.category}（科目: ${s.subject}）`  : '年度・科目を選択してください。';
-  $('subject-filter-row').hidden=!['year','categories','required'].includes(s.mode);
+  $('category').textContent=s.mode==='daimon' ? `${s.category}（科目: ${s.subject||'要入力'}）` : ['categories','required'].includes(s.mode) ? '科目や分野を選ぶと、含まれる全問題を1問ずつ取得します。' : s.mode==='required-items' ? `${s.category}（科目: ${s.subject}）` : s.mode==='category-questions' ? '分野を横断して、取得する問題を選択できます。'  : '年度・科目を選択してください。';
+  $('subject-filter-row').hidden=!['year','categories','required','category-questions'].includes(s.mode);
   $('review-options').hidden=!['daimon','categories'].includes(s.mode);
+  $('question-options').hidden=!['daimon','required-items','categories','required','category-questions'].includes(s.mode);
+  $('select-unpracticed').hidden=['categories','required'].includes(s.mode);
+  $('load-questions').hidden=!['categories','required'].includes(s.mode);$('load-questions').disabled=s.busy||!selection.size;
+  $('max-score').disabled=s.busy;$('include-unpracticed').disabled=s.busy;$('select-unpracticed').disabled=s.busy;
   $('review-only').disabled=s.busy;$('force-download').disabled=s.busy;
   $('subject-row').hidden=s.mode!=='daimon'||!!s.subject;
   $('count').textContent=`${s.items.length}件`;$('path').textContent=s.outputDir;
@@ -44,10 +48,11 @@ function render(s) {
 function renderItems(){
   if(!current)return;
   const visible=visibleItems();
-  $('items').replaceChildren(...visible.map((item,position)=>{const label=document.createElement('label');label.className='item';const box=document.createElement('input');box.type='checkbox';box.checked=selection.has(item.index);box.disabled=current.busy;box.addEventListener('click',e=>{if(!(e.shiftKey && itemAnchor!==null && selectRange(visible,selection,itemAnchor,item.index,box.checked)))box.checked?selection.add(item.index):selection.delete(item.index);itemAnchor=item.index;renderItems();});const title=document.createElement('span');title.textContent=`${position+1}. ${item.title}${current.mode==='daimon' ? '（最高得点率: '+(item.scoreRate===null?'未判定':item.scoreRate+'%')+'）' : ''}`;label.append(box,title);return label;}));
+  $('items').replaceChildren(...visible.map((item,position)=>{const label=document.createElement('label');label.className='item';const box=document.createElement('input');box.type='checkbox';box.checked=selection.has(item.index);box.disabled=current.busy;box.addEventListener('click',e=>{if(!(e.shiftKey && itemAnchor!==null && selectRange(visible,selection,itemAnchor,item.index,box.checked)))box.checked?selection.add(item.index):selection.delete(item.index);itemAnchor=item.index;renderItems();});const title=document.createElement('span');title.textContent=`${position+1}. ${item.category ? item.category+' / ' : ''}${item.title}${['daimon','required-items','category-questions'].includes(current.mode) ? '（'+(item.practiceCount===0?'未演習、':'')+'最高得点率: '+(item.scoreRate===null?'未判定':item.scoreRate+'%')+'）' : ''}`;label.append(box,title);return label;}));
   $('all').checked=visible.length>0&&visible.every(x=>selection.has(x.index));$('all').indeterminate=visible.some(x=>selection.has(x.index))&&!$('all').checked;
   $('all').disabled=current.busy||!visible.length;$('filter').disabled=current.busy;$('subject-filter').disabled=current.busy;$('subject').disabled=current.busy;
   $('range-select').disabled=current.busy||!visible.length;
+  $('load-questions').disabled=current.busy||!selection.size;
   $('selected').textContent=`${selection.size}件を選択中`;$('start').disabled=current.busy||!selection.size;
 }
 setupRange('range',visibleItems,()=>selection,renderItems);
@@ -61,15 +66,25 @@ $('open-output').addEventListener('click',async()=>{try{await api('/api/open-out
 $('choose-data-dir').addEventListener('click',()=>chooseFolder('data-dir','data-dir-status'));
 $('choose-files-dir').addEventListener('click',()=>chooseFolder('files-dir','rename-status'));
 $('set-data-dir').addEventListener('click',async()=>{try{const data=await api('/api/data-dir',{path:$('data-dir').value.trim()});$('data-dir').value=data.dataDir;$('rename-panel').hidden=true;await refresh();}catch(e){$('data-dir-status').textContent=e.message;}});
-$('year').addEventListener('click',()=>action('/api/discover',{mode:'year'}));
-$('resume-year').addEventListener('click',()=>action('/api/discover',{mode:'year',resume:true}));
-$('daimon').addEventListener('click',()=>action('/api/discover',{mode:'daimon'}));
-$('categories').addEventListener('click',()=>action('/api/discover',{mode:'categories'}));
-$('resume-bulk').addEventListener('click',()=>action('/api/discover',{mode:'categories',resume:true}));
-$('required').addEventListener('click',()=>action('/api/discover',{mode:'required'}));
-$('required-items').addEventListener('click',()=>action('/api/discover',{mode:'required-items'}));
+function updateLoadControls(){
+  const type=$('exercise-type').value, scope=$('exercise-scope').value;
+  $('scope-row').hidden=type==='year';
+  $('resume-options').hidden=type==='required';
+  $('load-help').textContent=type==='year' ? '年度と科目を選べます。' : scope==='current' ? 'POSで対象の分野を開いてから読み込んでください。' : '科目や分野を選んで取得できます。分野内の問題を個別に選ぶこともできます。';
+}
+$('exercise-type').addEventListener('change',updateLoadControls);
+$('exercise-scope').addEventListener('change',updateLoadControls);
+$('discover').addEventListener('click',()=>{
+  const type=$('exercise-type').value, currentScope=$('exercise-scope').value==='current';
+  const mode=type==='year' ? 'year' : type==='daimon' ? (currentScope?'daimon':'categories') : (currentScope?'required-items':'required');
+  return action('/api/discover',{mode});
+});
+$('resume').addEventListener('click',()=>action('/api/discover',{mode:$('exercise-type').value==='year'?'year':'categories',resume:true}));
+updateLoadControls();
+$('load-questions').addEventListener('click',()=>action('/api/load-questions',{indices:[...selection].sort((a,b)=>a-b)}));
+$('select-unpracticed').addEventListener('click',()=>{for(const item of visibleItems())if(item.practiceCount===0)selection.add(item.index);renderItems();});
 $('cancel').addEventListener('click',()=>action('/api/cancel',{}));
-$('start').addEventListener('click',()=>action('/api/start',{indices:[...selection].sort((a,b)=>a-b),subject:$('subject').value,reviewOnly:$('review-only').checked,force:$('force-download').checked,footer:$('filename-footer').checked}));
+$('start').addEventListener('click',()=>action('/api/start',{indices:[...selection].sort((a,b)=>a-b),subject:$('subject').value,reviewOnly:$('review-only').checked,force:$('force-download').checked,footer:$('filename-footer').checked,maxScore:$('max-score').value===''?null:Number($('max-score').value),includeUnpracticed:$('include-unpracticed').checked}));
 async function refresh(){try{render(await api('/api/status'));}catch{$('status').textContent='GUIとの接続が切れました。ターミナルから再起動してください。';}}
 void refresh();setInterval(refresh,1500);
 
