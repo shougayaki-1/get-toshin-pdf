@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import { collectOne, inferSubject, listQuestions, readState } from './daimon.js'
 import { collectYear, listYears, openYearList, readYearState } from './year.js';
 import { copySaved, dateFolderFile, datePrefix, listFolder, listSaved, renameSaved } from './rename-files.js';
 import { openCategoryList, listCategories, enterCategory, returnToCategories } from './categories.js';
+import { openRequiredList, listRequiredCategories, enterRequiredCategory, returnToRequired } from './required.js';
 import { retryTransient } from './retry.js';
 import { isReviewTarget } from './score-filter.js';
 
@@ -32,7 +33,7 @@ export async function createGuiServer({context, dir, request}) {
   const token = randomBytes(32).toString('hex');
   const state = { mode:null, items:[], frame:null, page:null, subject:null, setId:null, category:null, busy:false,
     cancelRequested:false, reviewOnly:false, revision:0, resumeIndices:[], status:'POSにログインしてから、年度別または大問別の候補を読み込んでください。', progress:[], counts:null };
-  let savedFiles=[], filesRoot=null;
+  let savedFiles=[], filesRoot=null, recentFiles=[];
   async function readSelectedFiles() {
     const tracked=await listSaved(dir);
     if(!filesRoot)return tracked.map(f=>({...f,tracked:true}));
@@ -42,7 +43,7 @@ export async function createGuiServer({context, dir, request}) {
     }
     return (await listFolder(filesRoot)).map(f=>({...f,owners:map.get(path.resolve(filesRoot,f.path))||[]}));
   }
-  const sendStatus = () => ({ mode:state.mode, items:state.items.map((x,i)=>({index:i, title:state.mode==='year' ? `${x.round} / ${x.subject}` : state.mode==='categories' ? `${x.subject.name} / ${x.title}` : `${x.number} - ${x.title}`, subject:state.mode==='year' ? x.subject : state.mode==='categories' ? x.subject.name : state.subject, scoreRate:state.mode==='daimon' ? x.scoreRate : null})),
+  const sendStatus = () => ({ mode:state.mode, items:state.items.map((x,i)=>({index:i, title:state.mode==='year' ? `${x.round} / ${x.subject}` : ['categories','required'].includes(state.mode) ? `${x.typeName ? x.typeName + ' / ' : ''}${x.subject.name} / ${x.title}` : `${x.number} - ${x.title}`, subject:state.mode==='year' ? x.subject : ['categories','required'].includes(state.mode) ? x.subject.name : state.subject, scoreRate:state.mode==='daimon' ? x.scoreRate : null})),
     subject:state.subject, category:state.category, reviewOnly:state.reviewOnly, revision:state.revision, resumeIndices:state.resumeIndices, busy:state.busy, status:state.status, progress:state.progress, counts:state.counts, dataDir:dir,outputDir:path.join(dir,'output') });
   const reset = () => { state.revision++;state.resumeIndices=[];state.items=[];state.mode=null;state.frame=null;state.page=null;state.subject=null;state.reviewOnly=false;state.counts=null;state.progress=[]; };
   async function discover(mode, resume=false) {
@@ -65,17 +66,21 @@ export async function createGuiServer({context, dir, request}) {
           });
           if(new Set(state.resumeIndices).size!==state.resumeIndices.length)throw Error('前回の年度・科目を確認できません');
         }
-      } else if(mode==='daimon') {
+      } else if(mode==='daimon' || mode==='required-items') {
         const frame=page.frames().find(f=>{try {const u=new URL(f.url());return u.protocol==='https:' && u.hostname==='pos.toshin.com' && /\/EnshuKaishi\/?$/.test(u.pathname);} catch{return false;}});
-        if (!frame) throw Error('POSで大問別の分野を開いてください。');
-        const links=frame.locator('a[href*="DaimonBunyabetsuTop"]');
-        if (!await links.count()) throw Error('大問別の分野を開いてください。');
+        if (!frame) throw Error(mode==='daimon' ? 'POSで大問別の分野を開いてください。' : 'POSで正解必須問題の分野を開いてください。');
+        const links=frame.locator(mode==='daimon' ? 'a[href*="DaimonBunyabetsuTop"]' : 'a[href*="CorrectAnswerRequiredFukushuTop"]');
+        if (!await links.count()) throw Error(mode==='daimon' ? '大問別の分野を開いてください。' : '正解必須問題の分野を開いてください。');
         const back=await links.first().getAttribute('href');
         const setId=back && new URL(back,frame.url()).searchParams.get('enshuSetId');
         const category=(await frame.locator('h3').first().innerText()).replace(/^\s*[英国数理社情]\s*/, '').trim();
         const items=await listQuestions(frame);
         if (!setId || !items.length || items.some(x=>!x.id || !x.title || !/^\d+$/.test(x.number))) throw Error('問題一覧を確認できません。');
-        state.mode=mode;state.frame=frame;state.setId=setId;state.category=category;state.subject=inferSubject(category);state.items=items.map(x=>({...x,category}));
+        state.mode=mode;state.frame=frame;state.setId=setId;state.category=category;state.subject=mode==='required-items' ? category.split(/[\s　]+/)[0] : inferSubject(category);state.items=items.map(x=>({...x,category}));
+      } else if(mode==='required') {
+        const frame=await openRequiredList(page);const items=await listRequiredCategories(frame);
+        if(!items.length)throw Error('正解必須問題の分野が見つかりません');
+        state.mode=mode;state.frame=frame;state.items=items;
       } else if(mode==='categories') {
         state.status='科目と分野を読み込んでいます…';
         const frame=await openCategoryList(page);const items=await listCategories(frame);
@@ -94,7 +99,7 @@ export async function createGuiServer({context, dir, request}) {
         }
       } else throw Error('取得方法が不正です。');
       state.status=resume ? `前回の${state.resumeIndices.length}${mode==='year'?'件':'分野'}を選択しました。保存済みはスキップします。` : state.subject===null && mode==='daimon' ? '科目を判別できません。科目名を入力してください。' : `${state.items.length}件の候補を読み込みました。`;
-    } catch(e) { reset();state.status=e.message && /^(専用ブラウザ|POSで|大問別|問題一覧|年度別の候補|再開できる|前回の分野|前回の年度)/.test(e.message) ? e.message : '候補を読み込めません。ログイン状態と画面を確認してください。'; }
+    } catch(e) { reset();state.status=e.message && /^(専用ブラウザ|POSで|大問別|正解必須|問題一覧|年度別の候補|再開できる|前回の分野|前回の年度)/.test(e.message) ? e.message : '候補を読み込めません。ログイン状態と画面を確認してください。'; }
     finally {state.busy=false;}
   }
   async function saveBulkReport(mode, categories, completed) {
@@ -115,15 +120,15 @@ export async function createGuiServer({context, dir, request}) {
       onRetry:(status,attempt,delay)=>{state.status=`HTTP ${status}: ${Math.ceil(delay/1000)}秒待って再試行します（${attempt}/2）。`;}
     });
   }
-  async function processCategories(indices, reviewOnly, force) {
+  async function processCategories(indices, reviewOnly, force, footer) {
     const selected=indices.map(i=>state.items[i]); let completed=0;
     const history=await readState(dir);
-    await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed);
+    if(state.mode==='categories')await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed);
     for(const category of selected) {
       if(state.cancelRequested)break;
       state.status=`分野 ${completed+1}/${selected.length}: ${category.title}`;
       try {
-        await enterCategory(state.frame,category);
+        if(state.mode==='required')await enterRequiredCategory(state.frame,category);else await enterCategory(state.frame,category);
         const subject=inferSubject(category.title) || category.subject.name;
         if(!subject)throw Error('科目を判別できません');
         const items=await listQuestions(state.frame);
@@ -135,36 +140,36 @@ export async function createGuiServer({context, dir, request}) {
         }
         for(const item of eligible) {
           if(state.cancelRequested)break;
-          const result=await withRetries(()=>collectOne({page:state.page,frame:state.frame,item:{...item,category:category.title},setId:category.setId,subject,dir,state:history,force,...(request ? {request} : {})}));
+          const result=await withRetries(()=>collectOne({page:state.page,frame:state.frame,item:{...item,category:category.typeName ? `正解必須問題 ${category.typeName} ${category.title}` : category.title},setId:category.setId,subject,dir,state:history,force,footer,onSaved: file=>recentFiles.push(file),...(request ? {request} : {})}));
           state.counts[result]++;
           state.progress.push(`${result==='saved'?'保存':'スキップ'}: ${item.title}`);
           if(state.progress.length>200)state.progress.shift();
-          await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed);
+          if(state.mode==='categories')await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed);
           if(result==='saved')await new Promise(resolve=>setTimeout(resolve,2000));
         }
-        await returnToCategories(state.frame);
+        if(state.mode==='required')await returnToRequired(state.frame);else await returnToCategories(state.frame);
         if(state.cancelRequested)break;
         completed++;state.counts.remaining--;
-        await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed);
+        if(state.mode==='categories')await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed);
         if(completed<selected.length)await new Promise(resolve=>setTimeout(resolve,1500));
       } catch(e) {
         if(state.cancelRequested)break;
         state.counts.failed++;
         const code=/^HTTP (\d{3})$/.exec(e.message)?.[1];
         state.progress.push(`失敗: ${category.title}${code ? ` (HTTP ${code})` : ''}。処理を中断しました。`);
-        await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed).catch(()=>{});
+        if(state.mode==='categories')await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed).catch(()=>{});
         break;
       }
     }
-    await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed).catch(()=>{});
+    if(state.mode==='categories')await saveBulkReport('categories',selected.map(x=>({subject:x.subject.name,title:x.title})),completed).catch(()=>{});
   }
-  async function processItems(indices, subject, {reviewOnly=false,force=false}={}) {
-    state.reviewOnly=reviewOnly;state.cancelRequested=false;state.busy=true;state.progress=[]; state.counts={saved:0,skipped:0,failed:0,remaining:indices.length};
+  async function processItems(indices, subject, {reviewOnly=false,force=false,footer=false}={}) {
+    recentFiles=[];state.reviewOnly=reviewOnly;state.cancelRequested=false;state.busy=true;state.progress=[]; state.counts={saved:0,skipped:0,failed:0,remaining:indices.length};
     state.status='取得中です。POSの操作を終えるまでこの画面を開いたままにしてください。';
     let initial = []; const awake=keepAwake();
     try {
-      if(state.mode==='categories') {await processCategories(indices,reviewOnly,force);return;}
-      if(state.mode==='daimon') initial=await listQuestions(state.frame);
+      if(['categories','required'].includes(state.mode)) {await processCategories(indices,reviewOnly,force,footer);return;}
+      if(['daimon','required-items'].includes(state.mode)) initial=await listQuestions(state.frame);
       const savedState=state.mode==='year' ? await readYearState(dir) : await readState(dir);
       const yearSelections=state.mode==='year' ? indices.map(i=>({round:state.items[i].round,subject:state.items[i].subject})) : null;
       if(yearSelections)await saveBulkReport('year',yearSelections,0);
@@ -172,8 +177,8 @@ export async function createGuiServer({context, dir, request}) {
         if(state.cancelRequested)break;
         const item=state.items[index];
         try {
-          const result=await withRetries(()=>state.mode==='year' ? collectYear({page:state.page,frame:state.frame,item,dir,state:savedState,force,...(request ? {request} : {})}) :
-            collectOne({page:state.page,frame:state.frame,item,setId:state.setId,subject,dir,state:savedState,force,...(request ? {request} : {})}));
+          const result=await withRetries(()=>state.mode==='year' ? collectYear({page:state.page,frame:state.frame,item,dir,state:savedState,force,footer,onSaved: file=>recentFiles.push(file),...(request ? {request} : {})}) :
+            collectOne({page:state.page,frame:state.frame,item,setId:state.setId,subject,dir,state:savedState,force,footer,onSaved: file=>recentFiles.push(file),...(request ? {request} : {})}));
           state.counts[result]++; state.counts.remaining--;
           state.progress.push(`${result==='saved'?'保存':'スキップ'}: ${state.mode==='year'?`${item.round} / ${item.subject}`:item.title}`);
           if(yearSelections)await saveBulkReport('year',yearSelections,state.counts.saved+state.counts.skipped);
@@ -189,7 +194,7 @@ export async function createGuiServer({context, dir, request}) {
       }
     } catch {state.counts.failed++;state.progress.push('処理を開始できません。画面と保存先を確認してください。');}
     finally {
-      if(state.mode==='daimon' && initial.length) {
+      if(['daimon','required-items'].includes(state.mode) && initial.length) {
         try { for(let i=0;i<initial.length;i++) {const box=state.frame.locator('input.chkDaimon').nth(i); if(await box.isChecked()!==initial[i].checked) await state.frame.locator('li.questions-item').nth(i).locator('label.checkbox').click();} }
         catch {state.progress.push('POS画面の選択状態を復元できませんでした。');}
       }
@@ -206,9 +211,9 @@ export async function createGuiServer({context, dir, request}) {
     const supplied=req.headers['x-app-token'];
     if(typeof supplied!=='string' || !/^[a-f0-9]{64}$/.test(supplied) || !timingSafeEqual(Buffer.from(supplied),Buffer.from(token))) return response(res,403,{error:'アクセスできません'});
     if(req.method==='GET' && u.pathname==='/api/status') return response(res,200,sendStatus());
-    if(req.method==='GET' && u.pathname==='/api/files') {
+    if(req.method==='GET' && ['/api/files','/api/recent-files'].includes(u.pathname)) {
       if(state.busy) return response(res,409,{error:'処理中です'});
-      try {filesRoot=null;savedFiles=await readSelectedFiles();return response(res,200,{files:savedFiles});}
+      try {filesRoot=null;savedFiles=await readSelectedFiles();return response(res,200,{files:savedFiles,selected:u.pathname==='/api/recent-files'?savedFiles.flatMap((f,i)=>recentFiles.includes(f.path)?[i]:[]):[]});}
       catch {return response(res,500,{error:'保存履歴を読み込めません'});}
     }
     if(req.method!=='POST' || req.headers.origin !== `http://127.0.0.1:${server.address().port}`) return response(res,403,{error:'アクセスできません'});
@@ -216,6 +221,11 @@ export async function createGuiServer({context, dir, request}) {
     if(state.busy) return response(res,409,{error:'処理中です'});
     try {
       const body=await readJson(req);
+      if(u.pathname==='/api/open-output') {
+        if(process.platform!=='darwin')return response(res,400,{error:'この環境ではフォルダを開けません'});
+        const folder=path.join(dir,'output');await mkdir(folder,{recursive:true});
+        await promisify(execFile)('/usr/bin/open',[folder]);return response(res,200,{});
+      }
       if(u.pathname==='/api/choose-folder') {
         if(process.platform!=='darwin')return response(res,400,{error:'フォルダのパスを入力してください'});
         try {const {stdout}=await promisify(execFile)('/usr/bin/osascript',['-e','POSIX path of (choose folder with prompt "フォルダを選択してください")']);return response(res,200,{path:stdout.trim()});}
@@ -230,14 +240,14 @@ export async function createGuiServer({context, dir, request}) {
           const nextDirs=[...new Set([...knownDirs,selected])];
           try {await writeFile(path.join(settingsDir,'gui-settings.json'),JSON.stringify({dataDir:selected,knownDirs:nextDirs})+'\n',{mode:0o600});}
           catch {return response(res,500,{error:'保存先の設定を書き込めません'});}
-          dir=selected;knownDirs=nextDirs;filesRoot=null;savedFiles=[];state.counts=null;
+          dir=selected;knownDirs=nextDirs;filesRoot=null;savedFiles=[];recentFiles=[];state.counts=null;
           state.status='保存先を変更しました。取得履歴は保存先ごとに管理されます。';
           return response(res,200,{dataDir:dir,outputDir:path.join(dir,'output')});
         }
         try {filesRoot=selected;savedFiles=await readSelectedFiles();return response(res,200,{files:savedFiles,root:filesRoot});}
         catch {filesRoot=null;return response(res,500,{error:'フォルダを読み込めません'});}
       }
-      if(u.pathname==='/api/discover' && ['year','daimon','categories'].includes(body.mode)) {void discover(body.mode,body.resume===true && ['year','categories'].includes(body.mode));return response(res,202,{});}
+      if(u.pathname==='/api/discover' && ['year','daimon','categories','required','required-items'].includes(body.mode)) {void discover(body.mode,body.resume===true && ['year','categories'].includes(body.mode));return response(res,202,{});}
       if(u.pathname==='/api/rename') {
         try {datePrefix(body.date);} catch {return response(res,400,{error:'有効な日付を選択してください'});}
         const mode=body.mode ?? 'rename';
@@ -266,7 +276,7 @@ export async function createGuiServer({context, dir, request}) {
         const reviewOnly=body.reviewOnly===true && ['daimon','categories'].includes(state.mode);
         const indices=reviewOnly && state.mode==='daimon' ? body.indices.filter(i=>isReviewTarget(state.items[i])) : body.indices;
         if(!indices.length)return response(res,400,{error:'赤・黄色の対象問題がありません'});
-        void processItems(indices,subject,{reviewOnly,force:body.force===true});return response(res,202,{});
+        void processItems(indices,subject,{reviewOnly,force:body.force===true,footer:body.footer===true});return response(res,202,{});
       }
       return response(res,404,{error:'見つかりません'});
     } catch {return response(res,400,{error:'入力を確認してください'});}

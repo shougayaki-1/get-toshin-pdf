@@ -55,3 +55,21 @@ export async function transformPdf(bytes, PDFDocument, direction = 'ltr') {
   }
   return output.save();
 }
+
+// Render Japanese filenames with Chromium's system fonts and embed the result.
+export async function addFilenameFooter(bytes, filename, context, PDFDocument) {
+  const html = filename.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const page = await context.newPage();
+  let footerBytes;
+  try {
+    await page.setContent(`<!doctype html><meta charset="utf-8"><style>@page{size:1000px 24px;margin:0}body{margin:0;font:12px sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}</style><body>${html}</body>`);
+    footerBytes = await page.pdf({printBackground:true, preferCSSPageSize:true});
+  } finally { await page.close(); }
+  const pdf = await PDFDocument.load(bytes);
+  const [footer] = await pdf.embedPdf(footerBytes);
+  for (const target of pdf.getPages()) {
+    const width = Math.min(target.getWidth() - 24, 750);
+    target.drawPage(footer, {x:(target.getWidth()-width)/2, y:1, width, height:Math.min(10, width * 18 / 750)});
+  }
+  return pdf.save();
+}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PDFDocument, rgb, degrees } from 'pdf-lib';
+import { PDFDocument, PDFName, rgb, degrees } from 'pdf-lib';
 import { transformPdf } from '../src/pdf-transform.js';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -46,4 +46,20 @@ test('renders both directions, odd page, rotation and mixed page sizes', { skip:
     assert.deepEqual(lastLeft, direction === 'ltr' ? blue : white);
     assert.deepEqual(lastRight, direction === 'ltr' ? white : blue);
   }
+});
+
+test('adds the Japanese filename footer to every spread', async () => {
+  const { chromium } = await import('playwright');
+  const { addFilenameFooter } = await import('../src/pdf-transform.js');
+  const browser = await chromium.launch();
+  try {
+    const context = await browser.newContext();
+    const pdf = await PDFDocument.create();
+    pdf.addPage([400, 300]); pdf.addPage([400, 300]);
+    const result = await addFilenameFooter(await pdf.save(), '国語_問題.pdf', context, PDFDocument);
+    const loaded = await PDFDocument.load(result);
+    assert.equal(loaded.getPageCount(), 2);
+    for (const page of loaded.getPages()) assert.ok(page.node.Resources().lookup(PDFName.of('XObject')));
+    await context.close();
+  } finally { await browser.close(); }
 });

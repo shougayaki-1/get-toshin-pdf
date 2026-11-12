@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { isJapaneseSubject, isPdfBytes, isPdfDownloadUrl, isPrintPage, parseOptions } from './common.js';
-import { transformPdf } from './pdf-transform.js';
+import { transformPdf, addFilenameFooter } from './pdf-transform.js';
 import { parseSelection } from './selection.js';
 import { isReviewTarget, parseHighestScoreRate } from './score-filter.js';
 
@@ -59,7 +59,7 @@ export async function listQuestions(frame) {
   return questions.map(({scoreText,...question})=>({...question,scoreRate:parseHighestScoreRate(scoreText)}));
 }
 
-export async function collectOne({ page, frame, item, setId, subject, dir, state, force = false, request = page.context().request }) {
+export async function collectOne({ page, frame, item, setId, subject, dir, state, force = false, footer = false, onSaved = () => {}, request = page.context().request }) {
   const key = questionKey(setId, item.id);
   const prior = state.items.find(r => r.key === key);
   if (prior && !force && await exists(path.join(dir, prior.path))) return 'skipped';
@@ -88,13 +88,14 @@ export async function collectOne({ page, frame, item, setId, subject, dir, state
     if (!isPdfBytes(bytes)) throw new Error('PDFではありません。ログイン状態を確認してください');
     const source = await PDFDocument.load(bytes);
     if (!source.getPageCount()) throw new Error('PDFにページがありません');
-    const transformed = await transformPdf(bytes, PDFDocument, isJapaneseSubject(subject) ? 'rtl' : 'ltr');
+    let transformed = await transformPdf(bytes, PDFDocument, isJapaneseSubject(subject) ? 'rtl' : 'ltr');
     const folder = path.join(dir, 'output', filenamePart(subject), filenamePart(item.category));
     await mkdir(folder, { recursive: true });
     let file = path.join(folder, questionFilename(item.number, item.title));
     if (prior) file = path.join(dir, prior.path);
     else if (await exists(file)) file = file.replace(/\.pdf$/, `_${key.slice(0, 10)}.pdf`);
     if (!prior && await exists(file)) throw new Error('保存先の名前が衝突しています');
+    if (footer) transformed = await addFilenameFooter(transformed, path.basename(file), page.context(), PDFDocument);
     await mkdir(path.dirname(file), { recursive: true });
     const temp = `${file}.${randomBytes(8).toString('hex')}.tmp`;
     await writeFile(temp, transformed, { mode: 0o600, flag: 'wx' });
@@ -103,6 +104,7 @@ export async function collectOne({ page, frame, item, setId, subject, dir, state
       path: path.relative(dir, file), savedAt: new Date().toISOString() };
     if (prior) Object.assign(prior, entry); else state.items.push(entry);
     await saveState(dir, state);
+    onSaved(path.relative(dir, file));
     return 'saved';
   } finally { await popup.close().catch(() => {}); }
 }

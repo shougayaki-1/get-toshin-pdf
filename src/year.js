@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { isJapaneseSubject, isPdfBytes, isPdfDownloadUrl, isPrintPage, parseOptions } from './common.js';
 import { filenamePart } from './daimon.js';
 import { parseSelection } from './selection.js';
-import { transformPdf } from './pdf-transform.js';
+import { transformPdf, addFilenameFooter } from './pdf-transform.js';
 
 export async function listYears(frame) {
   return frame.locator('table.nendobetsu-ichiran').evaluate(table => {
@@ -44,7 +44,7 @@ async function saveYearState(dir, state) {
   await writeFile(temp, JSON.stringify(state, null, 2)+'\n', {mode:0o600, flag:'wx'});
   await rename(temp, path.join(dir, 'year-manifest.json'));
 }
-export async function collectYear({ page, frame, item, dir, state, force = false, request = page.context().request }) {
+export async function collectYear({ page, frame, item, dir, state, force = false, footer = false, onSaved = () => {}, request = page.context().request }) {
   const key = yearKey(item);
   const prior = state.items.find(x => x.key === key);
   if (prior && !force && await exists(path.join(dir, prior.path))) return 'skipped';
@@ -69,18 +69,20 @@ export async function collectYear({ page, frame, item, dir, state, force = false
       if (!response.ok()) throw httpError(response);
       const bytes = await response.body();
       if (!isPdfBytes(bytes) || !(await PDFDocument.load(bytes)).getPageCount()) throw Error('PDF応答ではありません');
-      const output = await transformPdf(bytes, PDFDocument, isJapaneseSubject(item.subject) ? 'rtl' : 'ltr');
+      let output = await transformPdf(bytes, PDFDocument, isJapaneseSubject(item.subject) ? 'rtl' : 'ltr');
       const folder = path.join(dir, 'output', '年度別', filenamePart(item.subject));
       await mkdir(folder, {recursive:true});
       let file = prior ? path.join(dir, prior.path) : path.join(folder, yearFilename(item));
       if (!prior && await exists(file)) file = file.replace(/\.pdf$/, `_${key.slice(0,10)}.pdf`);
       if (!prior && await exists(file)) throw Error('保存先の名前が衝突しています');
+      if (footer) output = await addFilenameFooter(output, path.basename(file), page.context(), PDFDocument);
       await mkdir(path.dirname(file),{recursive:true});
       const temp = `${file}.${randomBytes(8).toString('hex')}.tmp`;
       await writeFile(temp, output, {mode:0o600,flag:'wx'}); await rename(temp,file);
       const record = {key, round:item.round, subject:item.subject, path:path.relative(dir,file), savedAt:new Date().toISOString()};
       if (prior) Object.assign(prior, record); else state.items.push(record);
       await saveYearState(dir,state);
+      onSaved(path.relative(dir, file));
       return 'saved';
     } finally { await popup.close().catch(()=>{}); }
   } finally {

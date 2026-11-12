@@ -27,17 +27,17 @@ function render(s) {
     const subjects=[...new Set(s.items.map(x=>x.subject).filter(Boolean))];
     $('subject-filter').replaceChildren(new Option('すべての科目',''),...subjects.map(x=>new Option(x,x)));
   }
-  current=s;$('status').textContent=s.status;$('year').disabled=s.busy;$('resume-year').disabled=s.busy;$('daimon').disabled=s.busy;$('categories').disabled=s.busy;$('resume-bulk').disabled=s.busy;$('cancel').hidden=!s.busy||!s.counts;
-  $('set-data-dir').disabled=s.busy;$('choose-data-dir').disabled=s.busy;$('load-folder').disabled=s.busy;$('choose-files-dir').disabled=s.busy;$('load-files').disabled=s.busy;
+  current=s;$('status').textContent=s.status;$('year').disabled=s.busy;$('resume-year').disabled=s.busy;$('daimon').disabled=s.busy;$('categories').disabled=s.busy;$('resume-bulk').disabled=s.busy;$('required').disabled=s.busy;$('required-items').disabled=s.busy;$('cancel').hidden=!s.busy||!s.counts;
+  $('open-output').disabled=s.busy;$('load-recent').disabled=s.busy;$('set-data-dir').disabled=s.busy;$('choose-data-dir').disabled=s.busy;$('load-folder').disabled=s.busy;$('choose-files-dir').disabled=s.busy;$('load-files').disabled=s.busy;
   $('data-dir-status').textContent=`PDFの保存先: ${s.outputDir}`;
   $('selection').hidden=!s.mode;$('results').hidden=!s.counts;
-  $('category').textContent=s.mode==='daimon' ? `${s.category}（科目: ${s.subject||'要入力'}）` : s.mode==='categories' ? '科目や分野を選ぶと、含まれる全問題を1問ずつ取得します。' : '年度・科目を選択してください。';
-  $('subject-filter-row').hidden=!['year','categories'].includes(s.mode);
+  $('category').textContent=s.mode==='daimon' ? `${s.category}（科目: ${s.subject||'要入力'}）` : ['categories','required'].includes(s.mode) ? '科目や分野を選ぶと、含まれる全問題を1問ずつ取得します。' : s.mode==='required-items' ? `${s.category}（科目: ${s.subject}）`  : '年度・科目を選択してください。';
+  $('subject-filter-row').hidden=!['year','categories','required'].includes(s.mode);
   $('review-options').hidden=!['daimon','categories'].includes(s.mode);
   $('review-only').disabled=s.busy;$('force-download').disabled=s.busy;
   $('subject-row').hidden=s.mode!=='daimon'||!!s.subject;
   $('count').textContent=`${s.items.length}件`;$('path').textContent=s.outputDir;
-  $('counts').textContent=s.counts ? `保存 ${s.counts.saved}件　スキップ ${s.counts.skipped}件　失敗 ${s.counts.failed}件　未処理 ${s.counts.remaining}${s.mode==='categories'?'分野':'件'}` : '';
+  $('counts').textContent=s.counts ? `保存 ${s.counts.saved}件　スキップ ${s.counts.skipped}件　失敗 ${s.counts.failed}件　未処理 ${s.counts.remaining}${['categories','required'].includes(s.mode)?'分野':'件'}` : '';
   $('progress').replaceChildren(...s.progress.map(text=>{const li=document.createElement('li');li.textContent=text;return li;}));
   renderItems();
 }
@@ -57,6 +57,7 @@ $('all').addEventListener('change',e=>{for(const x of visibleItems())e.target.ch
 $('review-only').addEventListener('change',()=>{itemAnchor=null;if(current?.mode==='daimon' && $('review-only').checked)for(const x of current.items)if(x.scoreRate===null || x.scoreRate>=80)selection.delete(x.index);renderItems();});
 async function action(path,body){try{await api(path,body);await refresh();}catch(e){$('status').textContent=e.message;}}
 async function chooseFolder(input,status){try{const data=await api('/api/choose-folder',{});$(input).value=data.path;}catch(e){$(status).textContent=e.message;}}
+$('open-output').addEventListener('click',async()=>{try{await api('/api/open-output',{});}catch(e){$('data-dir-status').textContent=e.message;}});
 $('choose-data-dir').addEventListener('click',()=>chooseFolder('data-dir','data-dir-status'));
 $('choose-files-dir').addEventListener('click',()=>chooseFolder('files-dir','rename-status'));
 $('set-data-dir').addEventListener('click',async()=>{try{const data=await api('/api/data-dir',{path:$('data-dir').value.trim()});$('data-dir').value=data.dataDir;$('rename-panel').hidden=true;await refresh();}catch(e){$('data-dir-status').textContent=e.message;}});
@@ -65,8 +66,10 @@ $('resume-year').addEventListener('click',()=>action('/api/discover',{mode:'year
 $('daimon').addEventListener('click',()=>action('/api/discover',{mode:'daimon'}));
 $('categories').addEventListener('click',()=>action('/api/discover',{mode:'categories'}));
 $('resume-bulk').addEventListener('click',()=>action('/api/discover',{mode:'categories',resume:true}));
+$('required').addEventListener('click',()=>action('/api/discover',{mode:'required'}));
+$('required-items').addEventListener('click',()=>action('/api/discover',{mode:'required-items'}));
 $('cancel').addEventListener('click',()=>action('/api/cancel',{}));
-$('start').addEventListener('click',()=>action('/api/start',{indices:[...selection].sort((a,b)=>a-b),subject:$('subject').value,reviewOnly:$('review-only').checked,force:$('force-download').checked}));
+$('start').addEventListener('click',()=>action('/api/start',{indices:[...selection].sort((a,b)=>a-b),subject:$('subject').value,reviewOnly:$('review-only').checked,force:$('force-download').checked,footer:$('filename-footer').checked}));
 async function refresh(){try{render(await api('/api/status'));}catch{$('status').textContent='GUIとの接続が切れました。ターミナルから再起動してください。';}}
 void refresh();setInterval(refresh,1500);
 
@@ -95,6 +98,7 @@ setupRange('saved-range',visibleSaved,()=>renamedSelection,renderSaved);
 document.querySelectorAll('input[name=date-action]').forEach(r=>r.addEventListener('change',renderSaved));
 $('rename-filter').addEventListener('input',()=>{savedAnchor=null;renderSaved();});$('rename-date').addEventListener('input',renderSaved);
 $('rename-all').addEventListener('change',e=>{const term=$('rename-filter').value.trim().toLocaleLowerCase();savedFiles.forEach((f,i)=>{if(`${f.name} ${f.folder}`.toLocaleLowerCase().includes(term))e.target.checked?renamedSelection.add(i):renamedSelection.delete(i);});renderSaved();});
+$('load-recent').addEventListener('click',async()=>{try{const data=await api('/api/recent-files');savedFiles=data.files;renamedSelection=new Set(data.selected);savedAnchor=null;$('rename-panel').hidden=false;$('rename-status').textContent=data.selected.length?`今回取得した${data.selected.length}件を選択しました。`:'今回取得したPDFはありません。';$('rename-results').replaceChildren();renderSaved();}catch(e){$('rename-status').textContent=e.message;}});
 $('load-files').addEventListener('click',async()=>{try{const data=await api('/api/files');savedFiles=data.files;renamedSelection.clear();savedAnchor=null;$('rename-panel').hidden=false;$('rename-status').textContent=savedFiles.length?`${savedFiles.length}件のPDFがあります。`:'保存済みPDFがありません。';$('rename-results').replaceChildren();renderSaved();}catch(e){$('rename-status').textContent=e.message;}});
 $('load-folder').addEventListener('click',async()=>{try{const data=await api('/api/folder-files',{path:$('files-dir').value.trim()});savedFiles=data.files;renamedSelection.clear();savedAnchor=null;$('rename-panel').hidden=false;$('rename-status').textContent=`${data.root}：${savedFiles.length}件のPDFがあります。`;$('rename-results').replaceChildren();renderSaved();}catch(e){$('rename-status').textContent=e.message;}});
 $('rename-start').addEventListener('click',async()=>{
